@@ -4,7 +4,7 @@
 ```text
 data-lit-project/
 ├── data/
-│   ├── raw/             # original data (not pushed to repo)
+│   ├── raw/             # original data
 │   └── processed/       # cleaned datasets
 ├── notebooks/           # exploratory analysis
 │   └── placeholder_plot_test.txt
