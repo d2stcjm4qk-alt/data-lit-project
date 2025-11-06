@@ -15,7 +15,7 @@ data-lit-project/
 ├── results/
 │   ├── figures/
 │   └── tables/
-├── report/              # LaTeX paper
+├── report/              
 ├── .gitignore
 └── README.md
 ```
