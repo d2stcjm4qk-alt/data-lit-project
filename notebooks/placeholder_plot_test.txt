@@ -1,0 +1,2 @@
+This is a placeholder file for later plotting and EDA testing.
+We will replace this with a Jupyter notebook soon.
