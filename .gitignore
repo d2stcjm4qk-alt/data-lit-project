@@ -205,3 +205,17 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+#shape files
+*.cpg
+*.dbf
+*.prj
+*.shx
+*.sbn
+*.sbx
+
+
+# UK regional files are too big for git
+data/processed/geo_data/UK_merged.geojson
+data/raw/uk/regions/Local_Authority_Districts_May_2024_Boundaries_UK
+
