@@ -3,10 +3,11 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 import contextily as ctx
-from typing import Optional, Dict, Tuple
-import pyproj
+from typing import Optional, Dict, Tuple, List, Union
+import os
 from shapely.ops import unary_union
 from libpysal import weights
+from pathlib import Path
 
 import numpy as np
 import jax
@@ -16,40 +17,133 @@ import numpyro.distributions as dist
 from numpyro.infer import MCMC, NUTS, Predictive
 import arviz as az
 
+
+# Load accidents data
+def load_accidents(
+        csv_path: Union[str, Path],
+        lon_col: str = "longitude",
+        lat_col: str = "latitude",
+        separator: str = ",",
+        category_filters: Optional[Dict[str, List]] = None,
+        target_crs: str = "EPSG:4326"
+) -> gpd.GeoDataFrame:
+    """
+    Load accident CSV and convert to GeoDataFrame.
+    Optionally filter by multiple column values (e.g., casualty_severity, IstKrad).
+    Ensures consistent CRS for spatial operations.
+
+    Parameters:
+        csv_path (str or Path): Path to the CSV file.
+        lon_col (str): Longitude column name.
+        lat_col (str): Latitude column name.
+        separator (str): CSV delimiter.
+        category_filters (dict, optional): Dictionary of {column: [values]} to filter.
+        target_crs (str): CRS to set for the GeoDataFrame (default "EPSG:4326").
+
+    Returns:
+        gpd.GeoDataFrame: GeoDataFrame with filtered accidents and geometry column.
+    """
+    # Load CSV
+    df = pd.read_csv(str(csv_path), sep=separator, low_memory=False)
+
+    # Convert longitude and latitude to floats
+    df[lon_col] = df[lon_col].astype(str).str.replace(",", ".").astype(float)
+    df[lat_col] = df[lat_col].astype(str).str.replace(",", ".").astype(float)
+
+    # Apply category filters if provided
+    if category_filters:
+        for col, values in category_filters.items():
+            if col in df.columns:
+                df = df[df[col].isin(values)]
+            else:
+                print(f"Warning: Column '{col}' not found in CSV.")
+
+    # Convert to GeoDataFrame
+    gdf = gpd.GeoDataFrame(
+        df,
+        geometry=gpd.points_from_xy(df[lon_col], df[lat_col]),
+        crs="EPSG:4326"  # assume lon/lat in WGS84
+    )
+
+    # Reproject to target CRS if needed
+    if gdf.crs != target_crs:
+        gdf = gdf.to_crs(target_crs)
+
+    print(f"Loaded {len(gdf):,} accident points from {csv_path} (CRS={gdf.crs})")
+    return gdf
+
+
+def add_accident_counts_to_regions(
+        regions_gdf: gpd.GeoDataFrame,
+        accidents_gdf: gpd.GeoDataFrame,
+        region_id_col: str = None
+) -> gpd.GeoDataFrame:
+    """
+    Adds a column to regions_gdf with the count of accidents falling within each region.
+
+    Parameters:
+        regions_gdf (GeoDataFrame): GeoDataFrame with polygon geometries (regions).
+        accidents_gdf (GeoDataFrame): GeoDataFrame with point geometries (accidents).
+        region_id_col (str, optional): Column in regions_gdf to use as identifier (default uses index).
+
+    Returns:
+        GeoDataFrame: regions_gdf with a new column 'accident_count'.
+    """
+
+    regions_gdf = regions_gdf.to_crs(accidents_gdf.crs)
+
+    # Spatial join: attach region info to each accident
+    accidents_with_region = gpd.sjoin(
+        accidents_gdf, regions_gdf, how="left", predicate="within"
+    )
+
+    # Count accidents per region
+    accident_counts = (
+        accidents_with_region
+        .groupby("index_right")
+        .size()
+        .rename("accident_count")
+    )
+
+    # Merge counts back to regions_gdf
+    regions_with_counts = regions_gdf.copy()
+    regions_with_counts = regions_with_counts.merge(
+        accident_counts, left_index=True, right_index=True, how="left"
+    )
+
+    # Fill regions with 0 accidents
+    regions_with_counts["accident_count"] = regions_with_counts["accident_count"].fillna(0).astype(int)
+
+    return regions_with_counts
+
 def build_bayes_dataset(germany_gdf, uk_gdf):
     """
-    Extracts region_id, region_name, accidents, population
-    and attaches a 'country' column so both datasets share the same structure.
-    Returns a combined DataFrame ready for the Bayesian model.
+    Combine Germany and UK region data into a single DataFrame
+    with region_id, accidents, population, and country columns.
     """
-    print(f'GErmany before: {germany_gdf.head()}')
-    # ==== Germany ====
+    # Germany
     df_de = pd.DataFrame({
         "region_id": germany_gdf["region_code"].astype(str),
-        #"region_name": germany_gdf["GEN"].astype(str),
         "accidents": germany_gdf["accident_count"].astype(int),
         "population": germany_gdf["population"].fillna(0).astype(int),
         "country": "Germany"
     })
 
-    # ==== UK ====
-    # LAD has LAD24CD (code) and LAD24NM (name)
-    name_col = "LAD24NM" if "LAD24NM" in uk_gdf.columns else "GEN"
-
+    # UK
     df_uk = pd.DataFrame({
         "region_id": uk_gdf["region_code"].astype(str),
-        #"region_name": uk_gdf[name_col].astype(str),
         "accidents": uk_gdf["accident_count"].astype(int),
         "population": uk_gdf["population"].fillna(0).astype(int),
         "country": "UK"
     })
 
     df = pd.concat([df_de, df_uk], ignore_index=True)
-    print(f"Merged DE+UK regions for Bayesian model: {len(df)} rows")
+    print(f"Merged DE+UK regions: {len(df)} rows")
     return df
 
-
-# --- Poisson-Gamma hierarchical model ---
+# ==========================
+# Hierarchical Poisson model
+# ==========================
 def hierarchical_poisson_model(accidents, population, country_idx, n_countries=2):
     n_regions = len(accidents)
 
@@ -60,13 +154,13 @@ def hierarchical_poisson_model(accidents, population, country_idx, n_countries=2
     # Region-level effects
     region_effect = numpyro.sample("region_effect", dist.Normal(0, 1).expand([n_regions]))
 
-    # log lambda per person
+    # Log rate per 100k people
     log_lambda = mu_country[country_idx] + sigma_country[country_idx] * region_effect
 
-    # Poisson likelihood with log-population offset
+    # Poisson likelihood scaled to 100k population
     numpyro.sample(
         "obs",
-        dist.Poisson(jnp.exp(log_lambda + jnp.log(population))),
+        dist.Poisson(jnp.exp(log_lambda) * (population / 1e5)),
         obs=accidents
     )
 
@@ -74,18 +168,19 @@ def hierarchical_poisson_model(accidents, population, country_idx, n_countries=2
 # ==========================
 # Run NumPyro MCMC
 # ==========================
-def run_numpyro_scaled_model(df, num_warmup=1000, num_samples=2000):
-    # Compute accident rates per 100k population
-    accident_rate = (df["accidents"] / df["population"]) * 1e5
-    accidents = accident_rate.fillna(0).to_numpy()
+def run_numpyro_model(df, num_warmup=2000, num_samples=4000, num_chains=5):
+    """
+    Run MCMC for the hierarchical Poisson model.
+    """
+    accidents = df["accidents"].to_numpy()
     population = df["population"].to_numpy()
 
-    # Map countries
-    df['country_idx'] = df['country'].map({'Germany': 0, 'UK': 1}).astype(int)
+    # Map countries to integer indices
+    df['country_idx'] = df['country'].map({'Germany':0, 'UK':1}).astype(int)
     country_idx = df['country_idx'].to_numpy()
 
     kernel = NUTS(hierarchical_poisson_model)
-    mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, num_chains=1)
+    mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, num_chains=num_chains)
     mcmc.run(jax.random.PRNGKey(0),
              accidents=accidents,
              population=population,
@@ -93,25 +188,26 @@ def run_numpyro_scaled_model(df, num_warmup=1000, num_samples=2000):
     mcmc.print_summary()
     return mcmc
 
-
+# ==========================
+# Extract posterior rates per 100k population
+# ==========================
 def extract_rates_per_100k(mcmc, df):
-    import arviz as az
-    import numpy as np
-
+    """
+    Convert MCMC samples to expected accident rates per 100k population per region.
+    """
     samples = mcmc.get_samples()
-    mu_country = samples['mu_country']
+    mu_country = samples['mu_country']         # (num_samples, n_countries)
     sigma_country = samples['sigma_country']
-    region_effect = samples['region_effect']
+    region_effect = samples['region_effect']   # (num_samples, n_regions)
 
-    country_idx = df['country'].map({'Germany': 0, 'UK': 1}).to_numpy()
-    n_samples, n_regions = region_effect.shape
+    country_idx = df['country'].map({'Germany':0, 'UK':1}).to_numpy()
 
-    # Reconstruct log per-person rates
+    # Log per-person rate per sample
     log_lambda_samples = mu_country[:, country_idx] + sigma_country[:, country_idx] * region_effect.T
     lambda_samples = np.exp(log_lambda_samples)  # per-person rate
 
     # Convert to per 100k population
-    lambda_100k = lambda_samples * 1e5
+    lambda_100k = lambda_samples
 
     # Posterior mean and 95% HDI
     rate_mean = lambda_100k.mean(axis=0)
@@ -122,32 +218,6 @@ def extract_rates_per_100k(mcmc, df):
     df_out['rate_lower'] = rate_hdi[:, 0]
     df_out['rate_upper'] = rate_hdi[:, 1]
 
-    return df_out
-
-
-# ==========================
-# Extract posterior expected rates
-# ==========================
-def extract_rates(mcmc, df):
-    samples = mcmc.get_samples()
-    mu_country = samples['mu_country']  # (num_samples, n_countries)
-    sigma_country = samples['sigma_country']
-    region_effect = samples['region_effect']  # (num_samples, n_regions)
-
-    country_idx = df['country'].map({'Germany': 0, 'UK': 1}).to_numpy()
-
-    # log rate per person
-    log_lambda_samples = mu_country[:, country_idx] + sigma_country[:, country_idx] * region_effect.T
-    lambda_samples = np.exp(log_lambda_samples) * 1e5  # per 100k population
-
-    import arviz as az
-    rate_mean = lambda_samples.mean(axis=0)
-    rate_hdi = az.hdi(lambda_samples, hdi_prob=0.95)
-
-    df_out = df.copy()
-    df_out['rate_mean'] = rate_mean
-    df_out['rate_lower'] = rate_hdi[:, 0]
-    df_out['rate_upper'] = rate_hdi[:, 1]
     return df_out
 
 
@@ -177,7 +247,7 @@ def plot_expected_accidents(df_probs, mcmc):
     lambda_samples = np.exp(log_lambda_samples)
 
     # Convert to per 100,000 population
-    lambda_100k = lambda_samples * 1e5
+    lambda_100k = lambda_samples
 
     # Compute posterior mean and 95% HDI per region
     rate_mean = lambda_100k.mean(axis=0)
@@ -221,8 +291,7 @@ def plot_expected_accidents(df_probs, mcmc):
         c_hdi = az.hdi(country_draw_means, hdi_prob=0.95)
 
         color = colors_mean[c]
-        print(f'###################{len(df_probs)}')
-        x_min, x_max = 0, len(df_probs) / 2
+        x_min, x_max = 0, 171
 
         # Shaded HDI tube
         ax.fill_between([x_min, x_max], [c_hdi[0], c_hdi[0]], [c_hdi[1], c_hdi[1]],
@@ -274,14 +343,76 @@ def get_region_probs(mcmc, df):
 
 
 def main():
-    germany_acc_path = r"C:\Users\pbaue\Documents\Master_Informatik\Data_Literacy\Unfallatlas\csv\Unfallorte2024_LinRef.csv"
-    germany_geo_path = r"C:\Users\pbaue\Documents\Master_Informatik\Data_Literacy\GeoData\Germany_merged.geojson"
-    kreise = gpd.read_file(germany_geo_path)
+    # Base directory (project root, one level up from src)
+    BASE_DIR = Path(__file__).resolve().parent.parent
 
-    accidents = load_accidents(
-        germany_acc_path,
+    germany_geo_path = BASE_DIR / "data" / "processed" / "geo_data" / "Germany_merged.geojson"
+    germany_acc_path = BASE_DIR / "data" / "processed" / "reduced_uk_dataset" / "modified_ger.csv"
+    ger_regions_gdf = gpd.read_file(germany_geo_path)
+
+    ger_accidents_gdf = load_accidents(
+        str(germany_acc_path),
         category_filters={
-            "UKATEGORIE": [1],  # deadly
-            "IstKrad": [1]  # only darkness
+            "casualty_severity": [1]
         }
     )
+    ger_regions_with_accidents = add_accident_counts_to_regions(
+        regions_gdf=ger_regions_gdf,
+        accidents_gdf=ger_accidents_gdf
+    )
+
+    # UK datasets
+    uk_geo_path = BASE_DIR / "data" / "processed" / "geo_data" / "UK_merged.geojson"
+    #uk_acc_path = BASE_DIR / "data" / "processed" / "reduced_uk_dataset" / "reduced_uk_dataset.csv"
+    uk_acc_path = BASE_DIR / "data" / "raw" / "uk" / "dft-road-casualty-statistics-collision-2024.csv"
+    os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] = "0"  # No size limit
+    uk_regions_gdf = gpd.read_file(uk_geo_path)
+
+    uk_accidents_gdf = load_accidents(
+        str(uk_acc_path),
+        category_filters={
+            "collision_severity": [1]
+        }
+    )
+    print("UK accidents CRS:", uk_accidents_gdf.crs)
+    print("UK regions CRS:", uk_regions_gdf.crs)
+
+
+    uk_regions_with_accidents = add_accident_counts_to_regions(
+        regions_gdf=uk_regions_gdf,
+        accidents_gdf=uk_accidents_gdf
+    )
+
+    print(uk_regions_with_accidents['accident_count'].describe())
+    print(uk_regions_with_accidents['accident_count'].value_counts().head())
+
+    def print_population_stats(germany_gdf, uk_gdf):
+        print("\n================ Germany Population Stats ================")
+        print("Count:", len(germany_gdf))
+        print("Min:", germany_gdf["population"].min())
+        print("Median:", germany_gdf["population"].median())
+        print("Mean:", germany_gdf["population"].mean())
+        print("Max:", germany_gdf["population"].max())
+        print(germany_gdf["population"].describe())
+
+        print("\n================ UK Population Stats =====================")
+        print("Count:", len(uk_gdf))
+        print("Min:", uk_gdf["population"].min())
+        print("Median:", uk_gdf["population"].median())
+        print("Mean:", uk_gdf["population"].mean())
+        print("Max:", uk_gdf["population"].max())
+        print(uk_gdf["population"].describe())
+
+        print("\nDone.\n")
+
+    print_population_stats(ger_regions_with_accidents, uk_regions_with_accidents)
+
+    bayes_df = build_bayes_dataset(ger_regions_with_accidents, uk_regions_with_accidents)
+
+    mcmc = run_numpyro_model(bayes_df)
+    df_probs = get_region_probs(mcmc, bayes_df)
+    plot_expected_accidents(df_probs, mcmc)
+
+
+if __name__ == "__main__":
+    main()
