@@ -116,6 +116,7 @@ def add_accident_counts_to_regions(
 
     return regions_with_counts
 
+
 def build_bayes_dataset(germany_gdf, uk_gdf):
     """
     Combine Germany and UK region data into a single DataFrame
@@ -140,6 +141,7 @@ def build_bayes_dataset(germany_gdf, uk_gdf):
     df = pd.concat([df_de, df_uk], ignore_index=True)
     print(f"Merged DE+UK regions: {len(df)} rows")
     return df
+
 
 # ==========================
 # Hierarchical Poisson model
@@ -176,7 +178,7 @@ def run_numpyro_model(df, num_warmup=2000, num_samples=4000, num_chains=5):
     population = df["population"].to_numpy()
 
     # Map countries to integer indices
-    df['country_idx'] = df['country'].map({'Germany':0, 'UK':1}).astype(int)
+    df['country_idx'] = df['country'].map({'Germany': 0, 'UK': 1}).astype(int)
     country_idx = df['country_idx'].to_numpy()
 
     kernel = NUTS(hierarchical_poisson_model)
@@ -188,6 +190,7 @@ def run_numpyro_model(df, num_warmup=2000, num_samples=4000, num_chains=5):
     mcmc.print_summary()
     return mcmc
 
+
 # ==========================
 # Extract posterior rates per 100k population
 # ==========================
@@ -196,11 +199,11 @@ def extract_rates_per_100k(mcmc, df):
     Convert MCMC samples to expected accident rates per 100k population per region.
     """
     samples = mcmc.get_samples()
-    mu_country = samples['mu_country']         # (num_samples, n_countries)
+    mu_country = samples['mu_country']  # (num_samples, n_countries)
     sigma_country = samples['sigma_country']
-    region_effect = samples['region_effect']   # (num_samples, n_regions)
+    region_effect = samples['region_effect']  # (num_samples, n_regions)
 
-    country_idx = df['country'].map({'Germany':0, 'UK':1}).to_numpy()
+    country_idx = df['country'].map({'Germany': 0, 'UK': 1}).to_numpy()
 
     # Log per-person rate per sample
     log_lambda_samples = mu_country[:, country_idx] + sigma_country[:, country_idx] * region_effect.T
@@ -342,6 +345,108 @@ def get_region_probs(mcmc, df):
     return df_probs
 
 
+def compute_country_posteriors(mcmc, df):
+    """
+    Compute the posterior distribution of accident rates per country
+    (population-weighted mean accident rate per 100k people).
+    """
+
+    import numpy as np
+    import arviz as az
+
+    samples = mcmc.get_samples()
+
+    mu_country = samples['mu_country']  # shape: (S, 2)
+    sigma_country = samples['sigma_country']  # shape: (S, 2)
+    region_effect = samples['region_effect']  # shape: (S, R)
+
+    # region-level country index and population
+    country_idx = df["country"].map({"Germany": 0, "UK": 1}).to_numpy()
+    population = df["population"].to_numpy()
+
+    # reconstruct log-rate per region (S x R)
+    log_lambda_samples = (
+            mu_country[:, country_idx] +
+            sigma_country[:, country_idx] * region_effect
+    )
+
+    # per-person rate, scaled to per 100k
+    lambda_100k = np.exp(log_lambda_samples)  # already per 100k population
+
+    # ----- compute population-weighted national rate per sample -----
+    country_results = {}
+    for country_name, idx in {"Germany": 0, "UK": 1}.items():
+        # select region indices belonging to this country
+        mask = (country_idx == idx)
+        pop_c = population[mask]
+        rate_c = lambda_100k[:, mask]  # shape S x num_regions_in_country
+
+        # weighted national rate for each posterior sample:
+        # sum(rate_r * pop_r) / sum(pop_r)
+        weighted_country_rate = (rate_c * pop_c).sum(axis=1) / pop_c.sum()
+
+        # compute posterior summary
+        mean_rate = weighted_country_rate.mean()
+        hdi = az.hdi(weighted_country_rate, hdi_prob=0.95)
+
+        country_results[country_name] = {
+            "posterior_samples": weighted_country_rate,
+            "mean": mean_rate,
+            "hdi_lower": hdi[0],
+            "hdi_upper": hdi[1],
+        }
+
+    return country_results
+
+
+def plot_country_posteriors(country_posteriors):
+    """
+    Plot posterior density curves for each country's accident rate
+    (accidents per 100k population).
+
+    Input:
+        country_posteriors = output of compute_country_posteriors()
+    """
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    plt.figure(figsize=(12, 6))
+
+    colors = {
+        "Germany": "#365f9c",
+        "UK": "#d97a33"
+    }
+
+    for country, result in country_posteriors.items():
+        samples = result["posterior_samples"]
+        mean = result["mean"]
+        low = result["hdi_lower"]
+        high = result["hdi_upper"]
+
+        # KDE density line
+        sns.kdeplot(samples, label=f"{country} posterior", linewidth=2, color=colors[country])
+
+        # Mean vertical line
+        plt.axvline(mean, color=colors[country], linestyle="--", linewidth=2)
+
+        # 95% credible interval shading
+        plt.fill_betweenx(
+            [0, plt.gca().get_ylim()[1]],
+            low, high,
+            color=colors[country],
+            alpha=0.15,
+            label=f"{country} 95% CI"
+        )
+
+    plt.title("Posterior Accident Rate Distribution per Country (per 100k people)", fontsize=15)
+    plt.xlabel("Accidents per 100,000 population", fontsize=13)
+    plt.ylabel("Density", fontsize=13)
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+
 def main():
     # Base directory (project root, one level up from src)
     BASE_DIR = Path(__file__).resolve().parent.parent
@@ -363,7 +468,7 @@ def main():
 
     # UK datasets
     uk_geo_path = BASE_DIR / "data" / "processed" / "geo_data" / "UK_merged.geojson"
-    #uk_acc_path = BASE_DIR / "data" / "processed" / "reduced_uk_dataset" / "reduced_uk_dataset.csv"
+    # uk_acc_path = BASE_DIR / "data" / "processed" / "reduced_uk_dataset" / "reduced_uk_dataset.csv"
     uk_acc_path = BASE_DIR / "data" / "raw" / "uk" / "dft-road-casualty-statistics-collision-2024.csv"
     os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] = "0"  # No size limit
     uk_regions_gdf = gpd.read_file(uk_geo_path)
@@ -376,7 +481,6 @@ def main():
     )
     print("UK accidents CRS:", uk_accidents_gdf.crs)
     print("UK regions CRS:", uk_regions_gdf.crs)
-
 
     uk_regions_with_accidents = add_accident_counts_to_regions(
         regions_gdf=uk_regions_gdf,
@@ -413,6 +517,8 @@ def main():
     df_probs = get_region_probs(mcmc, bayes_df)
     plot_expected_accidents(df_probs, mcmc)
 
+    country_post = compute_country_posteriors(mcmc, bayes_df)
+    plot_country_posteriors(country_post)
 
 if __name__ == "__main__":
     main()

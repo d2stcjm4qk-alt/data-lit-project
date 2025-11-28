@@ -378,20 +378,16 @@ def plot_population(
         prominent_cities: Optional[Dict[str, Tuple[Tuple[float, float], Tuple[float, float]]]] = None,
         simplify_tolerance: Optional[float] = None,
         vmin: Optional[float] = None,
-        vmax: Optional[float] = None
+        vmax: Optional[float] = None,
+        scale_width_m: Optional[float] = None,   # reference width for matching scale
+        reuse_zoom: Optional[Tuple[Tuple[float,float], Tuple[float,float]]] = None  # (xlim, ylim)
 ):
     """
     Plot population per region with optional prominent city markers using LaTeX font and log scale.
-
-    Args:
-        regions_gdf: GeoDataFrame with geometries and population column.
-        title: Plot title.
-        save_path: If provided, saves the plot to this file.
-        prominent_cities: Dict mapping city names to ((lon, lat), (dx, dy)) offsets.
-        simplify_tolerance: If provided, simplifies geometries to reduce memory.
-        vmin: Minimum value for color scale (log scale).
-        vmax: Maximum value for color scale (log scale).
+    Can reuse exact zoom coordinates to reproduce identical view.
+    Returns a tuple (scale_width_m, (xlim, ylim)) for reuse.
     """
+
     # Use LaTeX for all text
     plt.rcParams.update({
         "text.usetex": True,
@@ -411,13 +407,12 @@ def plot_population(
     column = "population"
     legend_label = "Population"
 
-    # Determine fixed vmin and vmax for log scale
     if vmin is None:
         vmin = gdf_plot[column].min()
     if vmax is None:
         vmax = gdf_plot[column].max()
 
-    norm = mcolors.LogNorm(vmin=max(vmin, 1), vmax=vmax)  # avoid log(0)
+    norm = mcolors.LogNorm(vmin=max(vmin, 1), vmax=vmax)
 
     fig, ax = plt.subplots(figsize=(12, 14))
     gdf_plot.plot(
@@ -435,7 +430,41 @@ def plot_population(
     # Add basemap
     ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron, zoom=7, alpha=0.5)
 
-    # Plot prominent cities if provided
+    # ------------------------
+    # Physical scale / zoom
+    # ------------------------
+    if reuse_zoom is not None:
+        # Reuse exact xlim/ylim
+        xlim, ylim = reuse_zoom
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+
+        # Compute scale_width_m for reference
+        scale_width_m = xlim[1] - xlim[0]
+
+    else:
+        # Compute scale as before
+        minx, miny, maxx, maxy = gdf_plot.total_bounds
+        real_width = maxx - minx
+        real_height = maxy - miny
+        aspect = real_height / real_width
+
+        if scale_width_m is None:
+            scale_width_m = real_width
+
+        scale_width_m = max(scale_width_m, real_width)
+        target_height_m = max(scale_width_m * aspect, real_height)
+
+        cx = (minx + maxx) / 2
+        cy = (miny + maxy) / 2
+
+        xlim = (cx - scale_width_m / 2, cx + scale_width_m / 2)
+        ylim = (cy - target_height_m / 2, cy + target_height_m / 2)
+
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+
+    # Plot prominent cities
     if prominent_cities:
         project = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
         for label, ((lon, lat), (dx, dy)) in prominent_cities.items():
@@ -443,22 +472,27 @@ def plot_population(
             ax.plot(x, y, "o", color='0.3', markersize=4)
             ax.text(
                 x + dx, y + dy,
-                rf"\textbf{{{label}}}",  # LaTeX bold
+                rf"\textbf{{{label}}}",
                 fontsize=14,
                 ha="center",
                 va="bottom",
                 color='0.3'
             )
 
-    # ax.set_title(title)
     ax.axis("off")
 
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
+
     plt.show()
 
+    return scale_width_m, (xlim, ylim)
 
-def uk_preprocessing(BASE_DIR):
+
+
+
+
+def uk_preprocessing(BASE_DIR, scale_ref):
     uk_shp_path = BASE_DIR / "data" / "raw" / "UK" / "regions" / "Local_Authority_Districts_May_2024_Boundaries_UK/LAD_MAY_2024_UK_BFE.shp"
     uk_pop_path = BASE_DIR / "data" / "raw" / "UK" / "population" / "mye24tablesuk.xlsx"
 
@@ -468,8 +502,7 @@ def uk_preprocessing(BASE_DIR):
         "Birmingham": ((-1.8998, 52.4862), (0, 25000)),
         "Glasgow": ((-4.2518, 55.8642), (0, 50000)),
         "Liverpool": ((-2.9779, 53.4084), (0, 20000)),
-        "Bristol": ((-2.5879, 51.4545), (0, 25000)),
-        "Edinburgh": ((-3.1883, 55.9533), (0, 25000))
+        "Bristol": ((-2.5879, 51.4545), (0, 25000))
     }
 
     uk_lad = load_boundaries(uk_shp_path)
@@ -477,22 +510,25 @@ def uk_preprocessing(BASE_DIR):
                                    code_col_keywords=("Code",), pop_col_keywords=("All ages",))
     uk_lad = attach_population(uk_lad, uk_pop, region_code_col="LAD24CD")
     # Merge small regions to target population
-    merged_uk = merge_small_regions(uk_lad, pop_col="population", target_population=500_000,
-                                    remove_below=150_000)
-    merged_uk.to_file(BASE_DIR / "data" / "processed" / "geo_data" / "UK_merged.geojson",
-                      driver="GeoJSON")
+    # merged_uk = merge_small_regions(uk_lad, pop_col="population", target_population=500_000,
+    #                                remove_below=150_000)
+    # merged_uk.to_file(BASE_DIR / "data" / "processed" / "geo_data" / "UK_merged.geojson",
+    #                  driver="GeoJSON")
+    os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] = "0"  # No size limit
+    gdf = gpd.read_file(
+        BASE_DIR / "data" / "processed" / "geo_data" / "UK_merged.geojson"
+    )
+    uk_scale_ref, zoom_coord= plot_population(gdf, prominent_cities=uk_cities,
+                    title="UK population of merged regions",
+                    save_path=BASE_DIR / "results" / "figures" / "uk" / "UK_merged_regions_pop.png",
+                    vmin=1e4, vmax=4e6, scale_width_m=scale_ref)
 
     plot_population(uk_lad, prominent_cities=uk_cities,
                     title="UK population of regions",
                     save_path=BASE_DIR / "results" / "figures" / "uk" / "UK_orig_regions_pop.png",
-                    vmin=1e4,
-                    vmax=4e6)
+                    vmin=1e4, vmax=4e6, scale_width_m=scale_ref, reuse_zoom=zoom_coord)
 
-    plot_population(merged_uk, prominent_cities=uk_cities,
-                    title="UK population of merged regions",
-                    save_path=BASE_DIR / "results" / "figures" / "uk" / "UK_merged_regions_pop.png",
-                    vmin=1e4,
-                    vmax=4e6)
+
 
 
 def main():
@@ -504,7 +540,7 @@ def main():
     germany_pop_path = BASE_DIR / "data" / "raw" / "Germany" / "population" / "04-kreise.xlsx"
 
     df_berlin = load_district_population(
-        file_path= BASE_DIR / "data" / "raw" / "Germany" / "population" / "SB_A01-05-00_2025h01_BE.xlsx",
+        file_path= str(BASE_DIR / "data" / "raw" / "Germany" / "population" / "SB_A01-05-00_2025h01_BE.xlsx"),
         sheet=5,  # 5th sheet
         header_row=6,  # headers on row 8
         district_col=0,
@@ -515,7 +551,7 @@ def main():
     )
 
     df_munich = load_district_population(
-        file_path=BASE_DIR / "data" / "raw" / "Germany" / "population" / "bevolkerung_bezirke_neu.csv",
+        file_path=str(BASE_DIR / "data" / "raw" / "Germany" / "population" / "bevolkerung_bezirke_neu.csv"),
         sheet=0,  # 5th sheet
         header_row=0,  # headers on row 8
         district_col=1,
@@ -570,9 +606,9 @@ def main():
         "Leipzig": ((12.3731, 51.3397), (0, 25000))
     }
 
-    plot_population(kreise, prominent_cities=germany_cities,
+    scale_ref, zoom_coords = plot_population(kreise, prominent_cities=germany_cities,
                     title="Germany population of regions",
-                    save_path=BASE_DIR / "results" / "figures" / "germany" / "Germany_orig_regions_pop.png",
+                    save_path=str(BASE_DIR / "results" / "figures" / "germany" / "Germany_orig_regions_pop.png"),
                     vmin=1e4,
                     vmax=4e6)
 
@@ -655,13 +691,12 @@ def main():
     plot_population(merged_ger, prominent_cities=germany_cities,
                     title="Germany population of merged regions",
                     save_path=BASE_DIR / "results" / "figures" / "germany" / "Germany_merged_regions_pop.png",
-                    vmin=1e4,
-                    vmax=4e6)
+                    vmin=1e4, vmax=4e6, scale_width_m=scale_ref)
 
-    uk_preprocessing(BASE_DIR)
+    uk_preprocessing(BASE_DIR, scale_ref)
     # Optionally save merged layer
-    merged_ger.to_file(BASE_DIR / "data" / "processed" / "geo_data" / "Germany_merged.geojson",
-                       driver="GeoJSON")
+    # merged_ger.to_file(BASE_DIR / "data" / "processed" / "geo_data" / "Germany_merged.geojson",
+    #                   driver="GeoJSON")
 
     print("Processing complete. Merged regions saved to data/kreise_merged.geojson")
 
