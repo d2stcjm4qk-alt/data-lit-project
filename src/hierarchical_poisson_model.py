@@ -458,7 +458,8 @@ def main():
     ger_accidents_gdf = load_accidents(
         str(germany_acc_path),
         category_filters={
-            "casualty_severity": [1]
+            "casualty_severity": [1],
+            "is_mcyle": [1]
         }
     )
     ger_regions_with_accidents = add_accident_counts_to_regions(
@@ -469,14 +470,15 @@ def main():
     # UK datasets
     uk_geo_path = BASE_DIR / "data" / "processed" / "geo_data" / "UK_merged.geojson"
     # uk_acc_path = BASE_DIR / "data" / "processed" / "reduced_uk_dataset" / "reduced_uk_dataset.csv"
-    uk_acc_path = BASE_DIR / "data" / "raw" / "uk" / "dft-road-casualty-statistics-collision-2024.csv"
+    uk_acc_path = BASE_DIR / "data" / "processed" / "reduced_uk_dataset" / "reduced_uk_dataset.csv"
     os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] = "0"  # No size limit
     uk_regions_gdf = gpd.read_file(uk_geo_path)
 
     uk_accidents_gdf = load_accidents(
         str(uk_acc_path),
         category_filters={
-            "collision_severity": [1]
+            "collision_severity": [1],
+            "is_mcyle": [1]
         }
     )
     print("UK accidents CRS:", uk_accidents_gdf.crs)
