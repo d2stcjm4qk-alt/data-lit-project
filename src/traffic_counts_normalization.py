@@ -6,6 +6,8 @@ import plotly.express as px
 import os
 from pyrosm import OSM
 import geopandas as gpd
+from shapely.geometry import LineString
+from tqdm import tqdm
 
 
 def process_traffic_counts_df(
@@ -85,57 +87,74 @@ def process_traffic_counts_df(
 
 
 def load_ab_roads_from_pbf(pbf_path, country="DE"):
+    """
+    Load Autobahn (A) and Bundesstraße/Trunk (B) roads from a PBF,
+    compute lengths, and assign road classes.
+    Shows a progress bar for processing.
+
+    Parameters
+    ----------
+    pbf_path : str
+        Path to the .pbf file.
+    country : str
+        "DE" or "UK" for mapping classification.
+
+    Returns
+    -------
+    GeoDataFrame with columns: ['road_class', 'length_km', 'geometry']
+    """
+
     osm = OSM(pbf_path)
 
-    # 1. Load full driving network (no filters)
-    roads = osm.get_network(
-        network_type="driving",
-        extra_attributes=["highway"]
-    )
+    # 1. Load full driving network
+    print(f"Loading full driving network from {pbf_path} ...")
+    roads = osm.get_network(network_type="driving", extra_attributes=["highway"])
+    print(f"Loaded {len(roads)} road segments.")
 
-    # 2. Define classification mapping
-    if country == "DE":
-        valid_highways = [
-            "motorway", "motorway_link",
-            "trunk", "trunk_link",
-            "primary", "primary_link"
-        ]
-
+    # 2. Define mapping
+    if country.upper() == "DE":
+        valid_highways = ["motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link"]
         class_map = {
             "motorway": "A",
             "motorway_link": "A",
             "trunk": "B",
             "trunk_link": "B",
             "primary": "B",
-            "primary_link": "B",
+            "primary_link": "B"
         }
-
-    elif country == "UK":
-        valid_highways = [
-            "motorway", "motorway_link",
-            "trunk", "trunk_link",
-            "primary", "primary_link"
-        ]
-
+    elif country.upper() == "UK":
+        valid_highways = ["motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link"]
         class_map = {
             "motorway": "A",
             "motorway_link": "A",
             "trunk": "B",
             "trunk_link": "B",
             "primary": "B",
-            "primary_link": "B",
+            "primary_link": "B"
         }
+    else:
+        raise ValueError("Country must be 'DE' or 'UK'")
 
-    # 3. Filter only A + B roads
+    # 3. Filter manually
     roads = roads[roads["highway"].isin(valid_highways)].copy()
+    print(f"{len(roads)} road segments after filtering to valid highways.")
 
-    # 4. Project to meters and compute length
-    roads = roads.to_crs(3857)
-    roads["length_km"] = roads.length / 1000
+    # 4. Project to metric CRS for accurate length
+    roads = roads.to_crs(epsg=3857)
 
-    # 5. Assign road class
+    # 5. Compute lengths with progress bar
+    lengths = []
+    for geom in tqdm(roads.geometry, desc="Computing lengths"):
+        if geom is None or geom.is_empty:
+            lengths.append(0.0)
+        else:
+            lengths.append(geom.length / 1000)  # km
+    roads["length_km"] = lengths
+
+    # 6. Assign road class
     roads["road_class"] = roads["highway"].map(class_map)
 
+    # 7. Return minimal GeoDataFrame
     return roads[["road_class", "length_km", "geometry"]]
 
 
@@ -236,14 +255,16 @@ def main():
         road_class_col="Str_Kl",
         region_code_col="region_code"
     )
-
+    print('before ger road loading...')
     ger_roads = load_ab_roads_from_pbf(
-        r"D:\germany-latest.osm.pbf", country="DE"
+          str(BASE_DIR / "data" / "raw" / "Germany" / "traffic" / "germany-latest.osm.pbf"), country="DE"
     )
-
+    print('after ger road loading...')
+    print('before uk road loading...')
     uk_roads = load_ab_roads_from_pbf(
-        r"D:\united-kingdom-251202.osm.pbf", country="UK"
+        str(BASE_DIR / "data" / "raw" / "uk" / "traffic" / "united-kingdom-251202.osm.pbf"), country="UK"
     )
+    print('after uk road loading...')
 
     ger_gdf = add_osm_road_lengths_by_region_single_download(
         ger_gdf_traffic, ger_roads, region_code_col="region_code"
