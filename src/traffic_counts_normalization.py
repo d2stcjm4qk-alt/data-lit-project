@@ -270,6 +270,10 @@ def main():
         ger_gdf_traffic, ger_roads, region_code_col="region_code"
     )
 
+    ger_gdf_output_path = BASE_DIR / "data" / "preprocessed" / "germany" / "traffic" / "ger_gdf_with_osm_roads.gpkg"
+    ger_gdf_output_path.parent.mkdir(parents=True, exist_ok=True)
+    ger_gdf.to_file(ger_gdf_output_path, driver="GPKG")
+
     plot_interactive_plotly(
         ger_gdf,
         value_col="AADF_B",
@@ -325,6 +329,11 @@ def main():
 
     # Simplify geometries for plotting
     uk_gdf["geometry"] = uk_gdf["geometry"].simplify(0.0001, preserve_topology=True)
+
+    uk_gdf_output_path = BASE_DIR / "data" / "preprocessed" / "uk" / "traffic" / "uk_gdf_with_osm_roads.gpkg"
+    uk_gdf_output_path.parent.mkdir(parents=True, exist_ok=True)
+    uk_gdf.to_file(uk_gdf_output_path, driver="GPKG")
+
     # (uk_gdf_traffic)
     plot_interactive_plotly(uk_gdf, "AADF_B", "region_code")
 
