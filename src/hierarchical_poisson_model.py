@@ -428,56 +428,80 @@ def plot_expected_accidents(df_probs, mcmc):
 
 
 def plot_expected_accidents_aadf(df_probs, mcmc):
+    """
+    Plot posterior expected accident rates per region (per million vehicle-km)
+    using NumPy arrays from MCMC samples. Top 10% of German regions are removed
+    for plotting.
+
+    Parameters:
+    -----------
+    df_probs : pd.DataFrame
+        DataFrame containing region info, 'country', 'country_idx', 'exposure' columns
+    samples : dict
+        Dictionary with NumPy arrays from MCMC: 'mu_country', 'sigma_country', 'region_effect'
+    """
     import matplotlib.pyplot as plt
     import numpy as np
     import arviz as az
 
     fig, ax = plt.subplots(figsize=(16, 6))
 
+    country_idx = df_probs['country_idx'].values
+    exposure_million = df_probs['exposure'].values / 1e6  # per million vehicle-km
+
     # ------------------- reconstruct posterior rate samples -------------------
+    # shapes:
+    # mu_country: (n_samples, n_countries)
+    # sigma_country: (n_samples, n_countries)
+    # region_effect: (n_samples, n_regions)
     samples = mcmc.get_samples()
+    mu = samples['mu_country']
+    sigma = samples['sigma_country']
+    region_effect = samples['region_effect']
 
-    country_idx = df_probs['country_idx'].values  # numeric 0/1
+    n_samples = region_effect.shape[0]
+    n_regions = region_effect.shape[1]
 
-    # USE SCALED EXPOSURE (per million vehicle-km)
-    exposure = df_probs['exposure'].values / 1e6
+    # Compute rate per region per sample
+    log_lambda = mu[:, country_idx] + sigma[:, country_idx] * region_effect  # shape (n_samples, n_regions)
+    lambda_per_million = np.exp(log_lambda)  # accidents per million vehicle-km
 
-    n_samples = samples['region_effect'].shape[0]
-    n_regions = len(df_probs)
-
-    # Log accident rate per region
-    log_lambda_samples = (
-            samples["mu_country"][:, country_idx] +
-            samples["sigma_country"][:, country_idx] * samples["region_effect"]
-    )
-
-    # Rate per million vehicle-km
-    lambda_samples = np.exp(log_lambda_samples)
+    # Multiply by exposure if you want expected counts (optional)
+    # expected_counts = lambda_per_million * exposure_million
 
     # ------------------- region-level posterior summaries -------------------
-    rate_mean = lambda_samples.mean(axis=0)
-    rate_hdi = az.hdi(lambda_samples, hdi_prob=0.95)
+    rate_mean = lambda_per_million.mean(axis=0)
+    rate_hdi = az.hdi(lambda_per_million, hdi_prob=0.95)
 
-    df_probs["rate_mean"] = rate_mean
-    df_probs["rate_lower"] = rate_hdi[:, 0]
-    df_probs["rate_upper"] = rate_hdi[:, 1]
+    df_probs = df_probs.copy()
+    df_probs['rate_mean'] = rate_mean
+    df_probs['rate_lower'] = rate_hdi[:, 0]
+    df_probs['rate_upper'] = rate_hdi[:, 1]
+    print('ääääääääääääääääääää')
+    print(df_probs['country'])
+
+    # ------------------- remove top 10% German regions -------------------
+    mask_de = df_probs['country'] == 'Germany'
+    threshold = df_probs.loc[mask_de, 'rate_mean'].quantile(0.90)
+    df_plot = df_probs[~((df_probs['country'] == 'Germany') & (df_probs['rate_mean'] > threshold))].reset_index(
+        drop=True)
+    idx_plot = df_plot.index.values
 
     # ------------------- plotting -------------------
-    countries = df_probs['country'].unique()
+    countries = df_plot['country'].unique()
     colors = {'Germany': '#4c72b0', 'UK': '#dd8452'}
     colors_mean = {'Germany': '#1e3457', 'UK': '#803b28'}
 
-    # Sort regions for cleaner plot (optional but recommended)
-    df_probs = df_probs.sort_values(["country", "rate_mean"]).reset_index(drop=True)
+    # Sort regions within country for nicer plotting
+    df_plot = df_plot.sort_values(['country', 'rate_mean']).reset_index(drop=True)
 
-    # Plot region-level points with 95% CI
     for c in countries:
-        df_c = df_probs[df_probs['country'] == c]
+        df_c = df_plot[df_plot['country'] == c]
         idx = np.arange(len(df_c))
 
-        cm = df_c["rate_mean"].values
-        cl = df_c["rate_lower"].values
-        cu = df_c["rate_upper"].values
+        cm = df_c['rate_mean'].values
+        cl = df_c['rate_lower'].values
+        cu = df_c['rate_upper'].values
         color = colors[c]
 
         # Vertical CI lines
@@ -487,65 +511,45 @@ def plot_expected_accidents_aadf(df_probs, mcmc):
             ax.hlines([low, up], i - cap, i + cap, color=color, lw=1)
 
         # Mean points
-        ax.plot(idx, cm, "o", color=color, markersize=5, alpha=0.6, label=f"{c} regions")
-
+        ax.plot(idx, cm, 'o', color=color, markersize=5, alpha=0.6, label=f'{c} regions')
+        '''
         # Label TOP 5 highest-risk regions per country
-        df_top5 = df_c.nlargest(5, "rate_mean")
+        df_top5 = df_c.nlargest(5, 'rate_mean')
         for _, row in df_top5.iterrows():
             i = df_c.index.get_loc(row.name)
-            ax.text(
-                i,
-                row["rate_mean"],
-                row["region_id"],  # <-- change if your column name differs
-                fontsize=9,
-                ha="left",
-                va="bottom",
-                rotation=30,
-                color=color,
-                alpha=0.9
-            )
+            ax.text(i, row['rate_mean'], str(row.get('region_id', '')),
+                    fontsize=9, ha='left', va='bottom', rotation=30, color=color, alpha=0.9)
+        '''
 
     # ------------------- country-level mean & HDI tubes -------------------
     for c in countries:
-        df_c = df_probs[df_probs['country'] == c]
+        df_c = df_plot[df_plot['country'] == c]
         region_indices = df_c.index.values
 
-        country_draw_means = lambda_samples[:, region_indices].mean(axis=1)
+        country_draw_means = lambda_per_million[:, region_indices].mean(axis=1)
 
         c_mean = country_draw_means.mean()
         c_hdi = az.hdi(country_draw_means, hdi_prob=0.95)
 
         color = colors_mean[c]
-        x_min, x_max = 0, 171
+        x_min, x_max = 0, 171 - int(171*0.1)
 
-        # Shaded HDI tube
-        ax.fill_between(
-            [x_min, x_max],
-            [c_hdi[0], c_hdi[0]],
-            [c_hdi[1], c_hdi[1]],
-            color=color,
-            alpha=0.12
-        )
-
-        # Mean line
-        ax.hlines(
-            c_mean,
-            x_min,
-            x_max,
-            color=color,
-            linestyle="--",
-            lw=2,
-            label=f"{c} mean"
-        )
+        ax.fill_between([x_min, x_max],
+                        [c_hdi[0], c_hdi[0]],
+                        [c_hdi[1], c_hdi[1]],
+                        color=color, alpha=0.12)
+        ax.hlines(c_mean, x_min, x_max, color=color, linestyle='--', lw=2, label=f'{c} mean')
 
     # ------------------- styling -------------------
-    ax.grid(True, linestyle="--", alpha=0.35)
+    ax.grid(True, linestyle='--', alpha=0.35)
     ax.set_xlabel("Region index (sorted within country)")
     ax.set_ylabel("Accidents per Million Vehicle-Kilometers")
     ax.set_title("Posterior Expected Accident Risk per Region\n(with Country-Level Means & 95% HDI)")
     ax.legend()
     plt.tight_layout()
     plt.show()
+
+    return df_plot
 
 
 # --- Posterior predictive for region probabilities ---
@@ -738,14 +742,18 @@ def plot_country_posteriors(country_posteriors):
     plt.show()
 
 
-def plot_country_posteriors_aadf(country_posteriors):
+def plot_country_posteriors_aadf(country_posteriors, df_probs):
     """
     Plot posterior density curves for each country's accident rate
-    (accidents per million vehicle-kilometers).
+    (accidents per million vehicle-kilometers), excluding the top 10%
+    of German regions if requested.
+
+    df_probs: DataFrame containing 'country' and 'rate_mean' per region.
     """
 
     import matplotlib.pyplot as plt
     import seaborn as sns
+    import numpy as np
 
     plt.figure(figsize=(12, 6))
 
@@ -756,8 +764,20 @@ def plot_country_posteriors_aadf(country_posteriors):
 
     for country, result in country_posteriors.items():
         samples = result["posterior_samples"]
-        mean = result["mean"]
 
+        # Exclude top 10% German regions
+        if country == "Germany":
+            mask_de = df_probs["country"] == "Germany"
+            threshold = df_probs.loc[mask_de, "rate_mean"].quantile(0.90)
+
+            # Keep only samples from regions below threshold
+            keep_regions = df_probs.loc[mask_de & (df_probs["rate_mean"] <= threshold)].index
+            # If posterior_samples is 1D, we just filter using region IDs
+            samples = np.array([s for i, s in enumerate(samples) if i in keep_regions])
+
+        mean = samples.mean()  # recompute mean after filtering
+
+        # KDE plot
         sns.kdeplot(
             samples,
             label=f"{country} posterior",
@@ -765,6 +785,7 @@ def plot_country_posteriors_aadf(country_posteriors):
             color=colors[country]
         )
 
+        # Mean line
         plt.axvline(mean, color=colors[country], linestyle="--", linewidth=2)
 
     plt.title(
@@ -779,6 +800,53 @@ def plot_country_posteriors_aadf(country_posteriors):
     plt.show()
 
 
+def split_east_west_germany_from_centroids(gdf: gpd.GeoDataFrame):
+    """
+    Splits German regions into East and West using centroid longitude.
+    Corrects the common Bavaria misclassification issue.
+
+    Returns:
+        ger_west, ger_east
+    """
+
+    # Ensure WGS84 for longitude
+    if gdf.crs is None or gdf.crs.to_string() != "EPSG:4326":
+        gdf = gdf.to_crs(epsg=4326)
+
+    # Compute centroids safely in projected space, then convert back
+    gdf_metric = gdf.to_crs(epsg=3857)
+    centroids = gdf_metric.geometry.centroid.to_crs(epsg=4326)
+
+    gdf = gdf.copy()
+    gdf["centroid_lon"] = centroids.x
+    gdf["centroid_lat"] = centroids.y
+
+    # Historical inner-German border corridor (safe buffer)
+    BORDER_WEST = 10.8
+    BORDER_EAST = 11.2
+
+    # East Germany = clearly east of border
+    ger_east = gdf[gdf["centroid_lon"] > BORDER_EAST].copy()
+
+    # West Germany = everything west of border corridor
+    ger_west = gdf[gdf["centroid_lon"] < BORDER_WEST].copy()
+
+    # ✅ Regions inside the uncertainty corridor → assign by latitude rule
+    ger_border = gdf[
+        (gdf["centroid_lon"] >= BORDER_WEST) &
+        (gdf["centroid_lon"] <= BORDER_EAST)
+        ].copy()
+
+    # Thüringen / Saxony-Anhalt go East, Bavaria stays West
+    ger_border_west = ger_border[ger_border["centroid_lat"] < 50.5]
+    ger_border_east = ger_border[ger_border["centroid_lat"] >= 50.5]
+
+    ger_west = pd.concat([ger_west, ger_border_west])
+    ger_east = pd.concat([ger_east, ger_border_east])
+
+    return ger_west, ger_east
+
+
 def main():
     # Base directory (project root, one level up from src)
     BASE_DIR = Path(__file__).resolve().parent.parent
@@ -788,6 +856,9 @@ def main():
     germany_acc_path = BASE_DIR / "data" / "processed" / "reduced_uk_dataset" / "modified_ger.csv"
     ger_regions_gdf = gpd.read_file(germany_geo_path)
 
+    # Keep only West Germany (roughly west of former border)
+    ger_west, ger_east = split_east_west_germany_from_centroids(ger_regions_gdf)
+
     ger_accidents_gdf = load_accidents(
         str(germany_acc_path),
         category_filters={
@@ -796,7 +867,7 @@ def main():
         }
     )
     ger_regions_with_accidents = add_accident_counts_to_regions(
-        regions_gdf=ger_regions_gdf,
+        regions_gdf=ger_west,
         accidents_gdf=ger_accidents_gdf
     )
 
@@ -826,27 +897,6 @@ def main():
     print(uk_regions_with_accidents['accident_count'].describe())
     print(uk_regions_with_accidents['accident_count'].value_counts().head())
 
-    def print_population_stats(germany_gdf, uk_gdf):
-        print("\n================ Germany Population Stats ================")
-        print("Count:", len(germany_gdf))
-        print("Min:", germany_gdf["population"].min())
-        print("Median:", germany_gdf["population"].median())
-        print("Mean:", germany_gdf["population"].mean())
-        print("Max:", germany_gdf["population"].max())
-        print(germany_gdf["population"].describe())
-
-        print("\n================ UK Population Stats =====================")
-        print("Count:", len(uk_gdf))
-        print("Min:", uk_gdf["population"].min())
-        print("Median:", uk_gdf["population"].median())
-        print("Mean:", uk_gdf["population"].mean())
-        print("Max:", uk_gdf["population"].max())
-        print(uk_gdf["population"].describe())
-
-        print("\nDone.\n")
-
-    # print_population_stats(ger_regions_with_accidents, uk_regions_with_accidents)
-
     bayes_df = build_traffic_volume_bayes_dataset(ger_regions_with_accidents, uk_regions_with_accidents)
     print(bayes_df.columns)
 
@@ -854,8 +904,8 @@ def main():
     df_probs = get_region_probs(mcmc, bayes_df)
     plot_expected_accidents_aadf(df_probs, mcmc)
 
-    country_post = compute_country_posteriors_aadf(mcmc, bayes_df)
-    plot_country_posteriors_aadf(country_post)
+    country_post = compute_country_posteriors_aadf(mcmc, df_probs)
+    plot_country_posteriors_aadf(country_post, df_probs)
 
 
 if __name__ == "__main__":
