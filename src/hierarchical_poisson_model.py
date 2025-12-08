@@ -8,7 +8,6 @@ import os
 from shapely.ops import unary_union
 from libpysal import weights
 from pathlib import Path
-
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -117,6 +116,54 @@ def add_accident_counts_to_regions(
     return regions_with_counts
 
 
+def build_traffic_volume_bayes_dataset(germany_gdf, uk_gdf):
+    """
+    Build dataset for hierarchical Poisson model using vehicle-km exposure.
+    """
+
+    def process_gdf(gdf, country_name):
+        df = gdf.copy()
+
+        # Compute combined AADF weighted by road length
+        df["AADF_region_combined"] = (
+                (df["AADF_A"].fillna(0) * df["osm_length_A_km"].fillna(0) +
+                 df["AADF_B"].fillna(0) * df["osm_length_B_km"].fillna(0))
+                / df["osm_total_length_km"].replace(0, np.nan)
+        )
+
+        # Vehicle-km exposure (vehicles/day × km)
+        df["exposure"] = (
+                df["AADF_region_combined"] * df["osm_total_length_km"]
+        )
+
+        # Clean exposure
+        df["exposure"] = df["exposure"].replace([np.inf, -np.inf], np.nan).fillna(0)
+        df["exposure"] = np.clip(df["exposure"], 0, None)
+
+        return pd.DataFrame({
+            "region_id": df["region_code"].astype(str),
+            "accidents": df["accident_count"].astype(int),
+
+            # Exposure-based modeling
+            "exposure": df["exposure"],
+
+            # Keep for diagnostics if needed
+            "population": df["population"].fillna(0).astype(int),
+            "AADF_region_combined": df["AADF_region_combined"],
+            "osm_total_length_km": df["osm_total_length_km"],
+
+            "country": country_name
+        })
+
+    df_de = process_gdf(germany_gdf, "Germany")
+    df_uk = process_gdf(uk_gdf, "UK")
+
+    df_combined = pd.concat([df_de, df_uk], ignore_index=True)
+    print(f"Merged DE+UK regions: {len(df_combined)} rows")
+
+    return df_combined
+
+
 def build_bayes_dataset(germany_gdf, uk_gdf):
     """
     Combine Germany and UK region data into a single DataFrame
@@ -167,6 +214,40 @@ def hierarchical_poisson_model(accidents, population, country_idx, n_countries=2
     )
 
 
+def hierarchical_poisson_model_aadf(accidents, exposure, country_idx, n_countries=2):
+    n_regions = len(accidents)
+
+    # Country-level log-rate priors (accidents per million vehicle-km)
+    mu_country = numpyro.sample(
+        "mu_country",
+        dist.Normal(-10, 5).expand([n_countries])  # negative = rare events
+    )
+
+    sigma_country = numpyro.sample(
+        "sigma_country",
+        dist.HalfNormal(2).expand([n_countries])
+    )
+
+    # Region-level effects
+    region_effect = numpyro.sample(
+        "region_effect",
+        dist.Normal(0, 1).expand([n_regions])
+    )
+
+    # Log accident rate
+    log_lambda = mu_country[country_idx] + sigma_country[country_idx] * region_effect
+
+    # NUMERICALLY SAFE RATE
+    rate = jnp.exp(jnp.clip(log_lambda, -20, 20)) * exposure
+    rate = jnp.clip(rate, a_min=1e-10)
+
+    numpyro.sample(
+        "obs",
+        dist.Poisson(rate),
+        obs=accidents
+    )
+
+
 # ==========================
 # Run NumPyro MCMC
 # ==========================
@@ -187,6 +268,38 @@ def run_numpyro_model(df, num_warmup=2000, num_samples=4000, num_chains=5):
              accidents=accidents,
              population=population,
              country_idx=country_idx)
+    mcmc.print_summary()
+    return mcmc
+
+
+def run_numpyro_model_aadf(df, num_warmup=2000, num_samples=4000, num_chains=5):
+    """
+    Run MCMC for the hierarchical Poisson model using vehicle-km exposure.
+    """
+
+    accidents = df["accidents"].to_numpy()
+    df["exposure"] = df["exposure"] / 1e6  # per million vehicle-km
+    exposure = df["exposure"].to_numpy()
+
+    # Map countries to integer indices
+    df['country_idx'] = df['country'].map({'Germany': 0, 'UK': 1}).astype(int)
+    country_idx = df['country_idx'].to_numpy()
+
+    kernel = NUTS(hierarchical_poisson_model_aadf)
+    mcmc = MCMC(
+        kernel,
+        num_warmup=num_warmup,
+        num_samples=num_samples,
+        num_chains=num_chains
+    )
+
+    mcmc.run(
+        jax.random.PRNGKey(0),
+        accidents=accidents,
+        exposure=exposure,
+        country_idx=country_idx
+    )
+
     mcmc.print_summary()
     return mcmc
 
@@ -314,6 +427,127 @@ def plot_expected_accidents(df_probs, mcmc):
     plt.show()
 
 
+def plot_expected_accidents_aadf(df_probs, mcmc):
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import arviz as az
+
+    fig, ax = plt.subplots(figsize=(16, 6))
+
+    # ------------------- reconstruct posterior rate samples -------------------
+    samples = mcmc.get_samples()
+
+    country_idx = df_probs['country_idx'].values  # numeric 0/1
+
+    # USE SCALED EXPOSURE (per million vehicle-km)
+    exposure = df_probs['exposure'].values / 1e6
+
+    n_samples = samples['region_effect'].shape[0]
+    n_regions = len(df_probs)
+
+    # Log accident rate per region
+    log_lambda_samples = (
+            samples["mu_country"][:, country_idx] +
+            samples["sigma_country"][:, country_idx] * samples["region_effect"]
+    )
+
+    # Rate per million vehicle-km
+    lambda_samples = np.exp(log_lambda_samples)
+
+    # ------------------- region-level posterior summaries -------------------
+    rate_mean = lambda_samples.mean(axis=0)
+    rate_hdi = az.hdi(lambda_samples, hdi_prob=0.95)
+
+    df_probs["rate_mean"] = rate_mean
+    df_probs["rate_lower"] = rate_hdi[:, 0]
+    df_probs["rate_upper"] = rate_hdi[:, 1]
+
+    # ------------------- plotting -------------------
+    countries = df_probs['country'].unique()
+    colors = {'Germany': '#4c72b0', 'UK': '#dd8452'}
+    colors_mean = {'Germany': '#1e3457', 'UK': '#803b28'}
+
+    # Sort regions for cleaner plot (optional but recommended)
+    df_probs = df_probs.sort_values(["country", "rate_mean"]).reset_index(drop=True)
+
+    # Plot region-level points with 95% CI
+    for c in countries:
+        df_c = df_probs[df_probs['country'] == c]
+        idx = np.arange(len(df_c))
+
+        cm = df_c["rate_mean"].values
+        cl = df_c["rate_lower"].values
+        cu = df_c["rate_upper"].values
+        color = colors[c]
+
+        # Vertical CI lines
+        for i, m, low, up in zip(idx, cm, cl, cu):
+            ax.vlines(i, low, up, color=color, alpha=0.6, lw=1)
+            cap = 0.25
+            ax.hlines([low, up], i - cap, i + cap, color=color, lw=1)
+
+        # Mean points
+        ax.plot(idx, cm, "o", color=color, markersize=5, alpha=0.6, label=f"{c} regions")
+
+        # Label TOP 5 highest-risk regions per country
+        df_top5 = df_c.nlargest(5, "rate_mean")
+        for _, row in df_top5.iterrows():
+            i = df_c.index.get_loc(row.name)
+            ax.text(
+                i,
+                row["rate_mean"],
+                row["region_id"],  # <-- change if your column name differs
+                fontsize=9,
+                ha="left",
+                va="bottom",
+                rotation=30,
+                color=color,
+                alpha=0.9
+            )
+
+    # ------------------- country-level mean & HDI tubes -------------------
+    for c in countries:
+        df_c = df_probs[df_probs['country'] == c]
+        region_indices = df_c.index.values
+
+        country_draw_means = lambda_samples[:, region_indices].mean(axis=1)
+
+        c_mean = country_draw_means.mean()
+        c_hdi = az.hdi(country_draw_means, hdi_prob=0.95)
+
+        color = colors_mean[c]
+        x_min, x_max = 0, 171
+
+        # Shaded HDI tube
+        ax.fill_between(
+            [x_min, x_max],
+            [c_hdi[0], c_hdi[0]],
+            [c_hdi[1], c_hdi[1]],
+            color=color,
+            alpha=0.12
+        )
+
+        # Mean line
+        ax.hlines(
+            c_mean,
+            x_min,
+            x_max,
+            color=color,
+            linestyle="--",
+            lw=2,
+            label=f"{c} mean"
+        )
+
+    # ------------------- styling -------------------
+    ax.grid(True, linestyle="--", alpha=0.35)
+    ax.set_xlabel("Region index (sorted within country)")
+    ax.set_ylabel("Accidents per Million Vehicle-Kilometers")
+    ax.set_title("Posterior Expected Accident Risk per Region\n(with Country-Level Means & 95% HDI)")
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
+
+
 # --- Posterior predictive for region probabilities ---
 def get_region_probs(mcmc, df):
     samples = mcmc.get_samples()
@@ -382,10 +616,67 @@ def compute_country_posteriors(mcmc, df):
         rate_c = lambda_100k[:, mask]  # shape S x num_regions_in_country
 
         # weighted national rate for each posterior sample:
-        # sum(rate_r * pop_r) / sum(pop_r)
         weighted_country_rate = (rate_c * pop_c).sum(axis=1) / pop_c.sum()
 
         # compute posterior summary
+        mean_rate = weighted_country_rate.mean()
+        hdi = az.hdi(weighted_country_rate, hdi_prob=0.95)
+
+        country_results[country_name] = {
+            "posterior_samples": weighted_country_rate,
+            "mean": mean_rate,
+            "hdi_lower": hdi[0],
+            "hdi_upper": hdi[1],
+        }
+
+    return country_results
+
+
+def compute_country_posteriors_aadf(mcmc, df):
+    """
+    Compute posterior distribution of national accident rates
+    (EXPOSURE-weighted accident rate per million vehicle-km).
+    """
+
+    import numpy as np
+    import arviz as az
+
+    samples = mcmc.get_samples()
+
+    mu_country = samples['mu_country']  # shape: (S, 2)
+    sigma_country = samples['sigma_country']  # shape: (S, 2)
+    region_effect = samples['region_effect']  # shape: (S, R)
+
+    # region-level country index and exposure
+    country_idx = df["country"].map({"Germany": 0, "UK": 1}).to_numpy()
+
+    # per million vehicle-km
+    df["exposure"] = df["exposure"] / 1e6
+    exposure = df["exposure"].to_numpy()
+
+    # reconstruct log-rate per region (S x R)
+    log_lambda_samples = (
+            mu_country[:, country_idx] +
+            sigma_country[:, country_idx] * region_effect
+    )
+
+    # accident rate per million vehicle-km
+    lambda_per_million_vkm = np.exp(log_lambda_samples)
+
+    # ----- compute exposure-weighted national rate per sample -----
+    country_results = {}
+
+    for country_name, idx in {"Germany": 0, "UK": 1}.items():
+        mask = (country_idx == idx)
+
+        exposure_c = exposure[mask]  # (R_c,)
+        rate_c = lambda_per_million_vkm[:, mask]  # (S, R_c)
+
+        # ✅ exposure-weighted national rate
+        weighted_country_rate = (
+                (rate_c * exposure_c).sum(axis=1) / exposure_c.sum()
+        )
+
         mean_rate = weighted_country_rate.mean()
         hdi = az.hdi(weighted_country_rate, hdi_prob=0.95)
 
@@ -447,11 +738,53 @@ def plot_country_posteriors(country_posteriors):
     plt.show()
 
 
+def plot_country_posteriors_aadf(country_posteriors):
+    """
+    Plot posterior density curves for each country's accident rate
+    (accidents per million vehicle-kilometers).
+    """
+
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    plt.figure(figsize=(12, 6))
+
+    colors = {
+        "Germany": "#365f9c",
+        "UK": "#d97a33"
+    }
+
+    for country, result in country_posteriors.items():
+        samples = result["posterior_samples"]
+        mean = result["mean"]
+
+        sns.kdeplot(
+            samples,
+            label=f"{country} posterior",
+            linewidth=2,
+            color=colors[country]
+        )
+
+        plt.axvline(mean, color=colors[country], linestyle="--", linewidth=2)
+
+    plt.title(
+        "Posterior Accident Risk per Country\n(Accidents per Million Vehicle-Kilometers)",
+        fontsize=15
+    )
+    plt.xlabel("Accidents per Million Vehicle-Kilometers", fontsize=13)
+    plt.ylabel("Density", fontsize=13)
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+
 def main():
     # Base directory (project root, one level up from src)
     BASE_DIR = Path(__file__).resolve().parent.parent
 
-    germany_geo_path = BASE_DIR / "data" / "processed" / "geo_data" / "Germany_merged.geojson"
+    # germany_geo_path = BASE_DIR / "data" / "processed" / "geo_data" / "Germany_merged.geojson"
+    germany_geo_path = BASE_DIR / "data" / "preprocessed" / "germany" / "traffic" / "ger_gdf_with_osm_roads.gpkg"
     germany_acc_path = BASE_DIR / "data" / "processed" / "reduced_uk_dataset" / "modified_ger.csv"
     ger_regions_gdf = gpd.read_file(germany_geo_path)
 
@@ -468,7 +801,8 @@ def main():
     )
 
     # UK datasets
-    uk_geo_path = BASE_DIR / "data" / "processed" / "geo_data" / "UK_merged.geojson"
+    # uk_geo_path = BASE_DIR / "data" / "processed" / "geo_data" / "UK_merged.geojson"
+    uk_geo_path = BASE_DIR / "data" / "preprocessed" / "uk" / "traffic" / "uk_gdf_with_osm_roads.gpkg"
     # uk_acc_path = BASE_DIR / "data" / "processed" / "reduced_uk_dataset" / "reduced_uk_dataset.csv"
     uk_acc_path = BASE_DIR / "data" / "processed" / "reduced_uk_dataset" / "reduced_uk_dataset.csv"
     os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] = "0"  # No size limit
@@ -511,16 +845,18 @@ def main():
 
         print("\nDone.\n")
 
-    print_population_stats(ger_regions_with_accidents, uk_regions_with_accidents)
+    # print_population_stats(ger_regions_with_accidents, uk_regions_with_accidents)
 
-    bayes_df = build_bayes_dataset(ger_regions_with_accidents, uk_regions_with_accidents)
+    bayes_df = build_traffic_volume_bayes_dataset(ger_regions_with_accidents, uk_regions_with_accidents)
+    print(bayes_df.columns)
 
-    mcmc = run_numpyro_model(bayes_df)
+    mcmc = run_numpyro_model_aadf(bayes_df)
     df_probs = get_region_probs(mcmc, bayes_df)
-    plot_expected_accidents(df_probs, mcmc)
+    plot_expected_accidents_aadf(df_probs, mcmc)
 
-    country_post = compute_country_posteriors(mcmc, bayes_df)
-    plot_country_posteriors(country_post)
+    country_post = compute_country_posteriors_aadf(mcmc, bayes_df)
+    plot_country_posteriors_aadf(country_post)
+
 
 if __name__ == "__main__":
     main()
