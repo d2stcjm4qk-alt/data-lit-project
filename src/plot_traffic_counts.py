@@ -11,8 +11,8 @@ from hierarchical_poisson_model import load_accidents, add_accident_counts_to_re
 
 def plot_vehicles_per_km(
         regions_gdf: gpd.GeoDataFrame,
-        column_aadf: str = "AADF_region_weighted",
-        column_length: str = "osm_total_length_km",
+        column_aadf_accidents: str = "AADF_region_weighted",
+        # column_length: str = "osm_total_length_km",
         title: str = "Vehicles per km by Region",
         label: str = "Vehicles per km",
         save_path: Optional[str] = None,
@@ -35,7 +35,7 @@ def plot_vehicles_per_km(
     gdf_plot = regions_gdf.copy()
 
     # Avoid division by zero
-    gdf_plot["vehicles_per_km"] = gdf_plot[column_aadf].fillna(0) / gdf_plot[column_length].replace(0, np.nan)
+    # gdf_plot["vehicles_per_km"] = gdf_plot[column_aadf].fillna(0) / gdf_plot[column_length].replace(0, np.nan)
 
     # -------------------
     # Simplify geometries if requested
@@ -50,11 +50,11 @@ def plot_vehicles_per_km(
     # Color scale
     # -------------------
     if vmin is None:
-        vmin = gdf_plot["vehicles_per_km"].replace(0, np.nan).min()
+        vmin = gdf_plot[column_aadf_accidents].replace(0, np.nan).min()
     if vmax is None:
-        vmax = gdf_plot["vehicles_per_km"].max()
+        vmax = gdf_plot[column_aadf_accidents].max()
 
-    print(f'min: {vmin}, max: {vmax}')
+    print(f'min: {vmin}, max: {vmax}, mean: {gdf_plot[column_aadf_accidents].replace(0, np.nan).mean()}')
     norm = mcolors.LogNorm(vmin=max(vmin, 1e-2), vmax=vmax)  # small epsilon to avoid log(0)
 
     # -------------------
@@ -68,7 +68,7 @@ def plot_vehicles_per_km(
 
     fig, ax = plt.subplots(figsize=(12, 14))
     gdf_plot.plot(
-        column="vehicles_per_km",
+        column=column_aadf_accidents,
         cmap="viridis",
         legend=True,
         ax=ax,
@@ -160,36 +160,41 @@ def main():
     germany_geo_path = BASE_DIR / "data" / "preprocessed" / "germany" / "traffic" / "ger_gdf_with_osm_roads.gpkg"
     ger_regions_gdf = gpd.read_file(germany_geo_path)
     print(ger_regions_gdf.columns)
+    '''
     plot_vehicles_per_km(ger_regions_gdf, vmax=1045,
                          save_path=BASE_DIR / "results" / "figures" / "germany" / "germany_traffic_volume_per_region.png")
-
+    '''
     germany_acc_path = BASE_DIR / "data" / "processed" / "reduced_uk_dataset" / "modified_ger.csv"
 
     ger_accidents_gdf = load_accidents(
         str(germany_acc_path),
         category_filters={
-            "casualty_severity": [1],
-            "is_mcyle": [1]
+            "casualty_severity": [1]
         }
     )
     ger_regions_with_accidents = add_accident_counts_to_regions(
         regions_gdf=ger_regions_gdf,
         accidents_gdf=ger_accidents_gdf
     )
-    ger_regions_with_accidents["vehicle_km_per_day"] = ger_regions_gdf["AADF_region_weighted"] / ger_regions_gdf[
+    ger_regions_with_accidents["vehicle_km_per_day"] = ger_regions_gdf["AADF_region_weighted"] * ger_regions_gdf[
         "osm_total_length_km"].replace(0, np.nan)
+
+    print(f'AADF_region_weighted: {ger_regions_gdf["AADF_region_weighted"]}')
+    print(f'vehicle_km_per_day: {ger_regions_with_accidents["vehicle_km_per_day"]}')
     ger_regions_with_accidents["accidents_per_vehicle_km"] = (
-            ger_regions_with_accidents["accident_count"] / ger_regions_with_accidents["vehicle_km_per_day"].replace(0, np.nan)
+            ger_regions_with_accidents["accident_count"] / (ger_regions_with_accidents["vehicle_km_per_day"].replace(0, np.nan) * 365) * 1e9
     )
-    plot_vehicles_per_km(ger_regions_with_accidents, column_aadf="accident_count", column_length="vehicle_km_per_day",
-                         save_path=BASE_DIR / "results" / "figures" / "germany" / "germany_traffic_volume_per_region.png",
+    print(f'accidents_per_vehicle_km: {ger_regions_with_accidents["accidents_per_vehicle_km"]}')
+    plot_vehicles_per_km(ger_regions_with_accidents, column_aadf_accidents="accidents_per_vehicle_km",
+                         save_path=BASE_DIR / "results" / "figures" / "germany" / "germany_accidents_per_traffic_volume_per_region.png",
                          label="Accidents / Vehicles per km")
 
+    '''
     uk_geo_path = BASE_DIR / "data" / "preprocessed" / "uk" / "traffic" / "uk_gdf_with_osm_roads.gpkg"
     uk_regions_gdf = gpd.read_file(uk_geo_path)
     plot_vehicles_per_km(uk_regions_gdf, vmax=1045,
                          save_path=BASE_DIR / "results" / "figures" / "uk" / "uk_traffic_volume_per_region.png")
-
+    '''
 
 if __name__ == "__main__":
     main()

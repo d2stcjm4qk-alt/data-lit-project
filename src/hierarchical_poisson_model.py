@@ -72,82 +72,101 @@ def load_accidents(
     return gdf
 
 
-def add_accident_counts_to_regions(
+def add_accident_counts_to_regions_monthly(
         regions_gdf: gpd.GeoDataFrame,
-        accidents_gdf: gpd.GeoDataFrame,
-        region_id_col: str = None
+        accidents_gdf: gpd.GeoDataFrame
 ) -> gpd.GeoDataFrame:
     """
-    Adds a column to regions_gdf with the count of accidents falling within each region.
-
-    Parameters:
-        regions_gdf (GeoDataFrame): GeoDataFrame with polygon geometries (regions).
-        accidents_gdf (GeoDataFrame): GeoDataFrame with point geometries (accidents).
-        region_id_col (str, optional): Column in regions_gdf to use as identifier (default uses index).
-
-    Returns:
-        GeoDataFrame: regions_gdf with a new column 'accident_count'.
+    Adds accident counts per region per month (1–12).
+    Returns one row per (region, month).
     """
 
     regions_gdf = regions_gdf.to_crs(accidents_gdf.crs)
 
-    # Spatial join: attach region info to each accident
+    # Extract month
+    accidents_gdf = accidents_gdf.copy()
+
+    # Spatial join
     accidents_with_region = gpd.sjoin(
-        accidents_gdf, regions_gdf, how="left", predicate="within"
+        accidents_gdf,
+        regions_gdf,
+        how="left",
+        predicate="within"
     )
 
-    # Count accidents per region
-    accident_counts = (
+    # Count accidents per region × month
+    counts = (
         accidents_with_region
-        .groupby("index_right")
+        .groupby(["index_right", "month"])
         .size()
         .rename("accident_count")
+        .reset_index()
     )
 
-    # Merge counts back to regions_gdf
-    regions_with_counts = regions_gdf.copy()
-    regions_with_counts = regions_with_counts.merge(
-        accident_counts, left_index=True, right_index=True, how="left"
+    # Create full grid: region × month
+    full_index = pd.MultiIndex.from_product(
+        [regions_gdf.index, range(1, 13)],
+        names=["index_right", "month"]
+    ).to_frame(index=False)
+
+    counts_full = full_index.merge(
+        counts,
+        on=["index_right", "month"],
+        how="left"
     )
 
-    # Fill regions with 0 accidents
-    regions_with_counts["accident_count"] = regions_with_counts["accident_count"].fillna(0).astype(int)
+    counts_full["accident_count"] = counts_full["accident_count"].fillna(0).astype(int)
 
-    return regions_with_counts
+    # Merge geometry back
+    result = counts_full.merge(
+        regions_gdf,
+        left_on="index_right",
+        right_index=True,
+        how="left"
+    )
+
+    return gpd.GeoDataFrame(result, geometry="geometry", crs=regions_gdf.crs)
 
 
-def build_traffic_volume_bayes_dataset(germany_gdf, uk_gdf):
+def build_traffic_volume_bayes_dataset_seasonal(germany_gdf, uk_gdf):
     """
-    Build dataset for hierarchical Poisson model using vehicle-km exposure.
+    Build dataset for hierarchical Poisson model with seasonal (monthly) effects.
+    Exposure is annual vehicle-km divided equally across months.
     """
 
     def process_gdf(gdf, country_name):
         df = gdf.copy()
+        print(f"{country_name} columns: {df.columns}")
 
-        # Compute combined AADF weighted by road length
+        # Compute AADF weighted by road length
         df["AADF_region_combined"] = (
-                (df["AADF_A"].fillna(0) * df["osm_length_A_km"].fillna(0) +
-                 df["AADF_B"].fillna(0) * df["osm_length_B_km"].fillna(0))
-                / df["osm_total_length_km"].replace(0, np.nan)
+            (df["AADF_A"].fillna(0) * df["osm_length_A_km"].fillna(0) +
+             df["AADF_B"].fillna(0) * df["osm_length_B_km"].fillna(0))
+            / df["osm_total_length_km"].replace(0, np.nan)
         )
 
-        # Vehicle-km exposure (vehicles/day × km)
-        df["exposure"] = (
-                df["AADF_region_combined"] * df["osm_total_length_km"]
+        # Annual vehicle-km exposure
+        df["exposure_annual"] = (
+            df["AADF_region_combined"] * df["osm_total_length_km"]
         )
 
-        # Clean exposure
-        df["exposure"] = df["exposure"].replace([np.inf, -np.inf], np.nan).fillna(0)
-        df["exposure"] = np.clip(df["exposure"], 0, None)
+        df["exposure_annual"] = (
+            df["exposure_annual"]
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0)
+            .clip(lower=0)
+        )
+
+        # Monthly exposure (assumed uniform)
+        df["exposure"] = df["exposure_annual"] / 12.0
 
         return pd.DataFrame({
             "region_id": df["region_code"].astype(str),
-            "accidents": df["accident_count"].astype(int),
-
-            # Exposure-based modeling
+            "month": df["month"].astype(int),          # 1–12
+            "accident_count": df["accident_count"].astype(int),
             "exposure": df["exposure"],
 
-            # Keep for diagnostics if needed
+            # Diagnostics / controls
             "population": df["population"].fillna(0).astype(int),
             "AADF_region_combined": df["AADF_region_combined"],
             "osm_total_length_km": df["osm_total_length_km"],
@@ -159,9 +178,10 @@ def build_traffic_volume_bayes_dataset(germany_gdf, uk_gdf):
     df_uk = process_gdf(uk_gdf, "UK")
 
     df_combined = pd.concat([df_de, df_uk], ignore_index=True)
-    print(f"Merged DE+UK regions: {len(df_combined)} rows")
+    print(f"Merged DE+UK seasonal rows: {len(df_combined)}")
 
     return df_combined
+
 
 
 def build_bayes_dataset(germany_gdf, uk_gdf):
@@ -248,6 +268,94 @@ def hierarchical_poisson_model_aadf(accidents, exposure, country_idx, n_countrie
     )
 
 
+def hierarchical_poisson_model_aadf_seasonal(
+        accidents,
+        exposure,
+        country_idx,
+        region_idx,
+        month_idx,
+        n_countries,
+        n_regions,
+        n_months=12
+):
+    # ----------------------------
+    # Country-level baseline log rates
+    # ----------------------------
+    mu_country = numpyro.sample(
+        "mu_country",
+        dist.Normal(-10.0, 5.0).expand([n_countries])
+    )
+
+    # ----------------------------
+    # Country-level regional heterogeneity
+    # ----------------------------
+    sigma_country = numpyro.sample(
+        "sigma_country",
+        dist.HalfNormal(1.5).expand([n_countries])
+    )
+
+    # ----------------------------
+    # Region-level random intercepts
+    # ----------------------------
+    region_effect = numpyro.sample(
+        "region_effect",
+        dist.Normal(0.0, 1.0).expand([n_regions])
+    )
+
+    # ----------------------------
+    # Country-level seasonal pattern (log-rate scale)
+    # ----------------------------
+    month_effect_country = numpyro.sample(
+        "month_effect_country",
+        dist.Normal(0.0, 0.3).expand([n_countries, n_months])
+    )
+
+    # Enforce zero-mean seasonality per country (identifiability)
+    month_effect_country = (
+        month_effect_country
+        - month_effect_country.mean(axis=-1, keepdims=True)
+    )
+
+    # ----------------------------
+    # Regional seasonal deviations (hierarchical)
+    # ----------------------------
+    tau_region_season = numpyro.sample(
+        "tau_region_season",
+        dist.HalfNormal(0.15)
+    )
+
+    month_effect_region = numpyro.sample(
+        "month_effect_region",
+        dist.Normal(0.0, tau_region_season).expand([n_regions, n_months])
+    )
+
+    # Enforce zero-mean per region
+    month_effect_region = (
+        month_effect_region
+        - month_effect_region.mean(axis=-1, keepdims=True)
+    )
+
+    # ----------------------------
+    # Log-rate
+    # ----------------------------
+    log_lambda = (
+        mu_country[country_idx]
+        + sigma_country[country_idx] * region_effect[region_idx]
+        + month_effect_country[country_idx, month_idx]
+        + month_effect_region[region_idx, month_idx]
+    )
+
+    # ----------------------------
+    # Exposure-adjusted Poisson rate
+    # ----------------------------
+    rate = jnp.exp(jnp.clip(log_lambda, -20, 20)) * exposure
+    rate = jnp.clip(rate, a_min=1e-10)
+
+    numpyro.sample("obs", dist.Poisson(rate), obs=accidents)
+
+
+
+
 # ==========================
 # Run NumPyro MCMC
 # ==========================
@@ -298,6 +406,64 @@ def run_numpyro_model_aadf(df, num_warmup=2000, num_samples=4000, num_chains=5):
         accidents=accidents,
         exposure=exposure,
         country_idx=country_idx
+    )
+
+    mcmc.print_summary()
+    return mcmc
+
+
+def run_numpyro_model_aadf_seasonal(
+        df,
+        num_warmup=2000,
+        num_samples=4000,
+        num_chains=4
+):
+    """
+    Run hierarchical Poisson model with country-specific seasonal (monthly) effects.
+    """
+
+    # Observations
+    print(f'run moden df: {df.columns}')
+    accidents = df["accident_count"].to_numpy()
+
+    # Exposure in million vehicle-km (monthly exposure)
+    exposure = (df["exposure"] / 1e6).to_numpy()
+
+    # Country index
+    country_idx = df["country"].map(
+        {"Germany": 0, "UK": 1}
+    ).astype(int).to_numpy()
+
+    # Region index (shared across months)
+    region_mapping = {rid: i for i, rid in enumerate(df["region_id"].unique())}
+    df["region_idx"] = df["region_id"].map(region_mapping)
+    region_idx = df["region_idx"].astype(int).to_numpy()
+
+    # Month index: must be 0–11
+    month_idx = df["month"].astype(int).to_numpy()
+
+    n_countries = 2
+    n_regions = len(region_mapping)
+    n_months = 12
+
+    kernel = NUTS(hierarchical_poisson_model_aadf_seasonal)
+    mcmc = MCMC(
+        kernel,
+        num_warmup=num_warmup,
+        num_samples=num_samples,
+        num_chains=num_chains
+    )
+
+    mcmc.run(
+        jax.random.PRNGKey(0),
+        accidents=accidents,
+        exposure=exposure,
+        country_idx=country_idx,
+        region_idx=region_idx,
+        month_idx=month_idx,
+        n_countries=n_countries,
+        n_regions=n_regions,
+        n_months=n_months
     )
 
     mcmc.print_summary()
@@ -532,7 +698,7 @@ def plot_expected_accidents_aadf(df_probs, mcmc):
         c_hdi = az.hdi(country_draw_means, hdi_prob=0.95)
 
         color = colors_mean[c]
-        x_min, x_max = 0, 171 - int(171*0.1)
+        x_min, x_max = 0, 171 - int(171 * 0.1)
 
         ax.fill_between([x_min, x_max],
                         [c_hdi[0], c_hdi[0]],
@@ -676,7 +842,7 @@ def compute_country_posteriors_aadf(mcmc, df):
         exposure_c = exposure[mask]  # (R_c,)
         rate_c = lambda_per_million_vkm[:, mask]  # (S, R_c)
 
-        # ✅ exposure-weighted national rate
+        # exposure-weighted national rate
         weighted_country_rate = (
                 (rate_c * exposure_c).sum(axis=1) / exposure_c.sum()
         )
@@ -831,7 +997,7 @@ def split_east_west_germany_from_centroids(gdf: gpd.GeoDataFrame):
     # West Germany = everything west of border corridor
     ger_west = gdf[gdf["centroid_lon"] < BORDER_WEST].copy()
 
-    # ✅ Regions inside the uncertainty corridor → assign by latitude rule
+    # Regions inside the uncertainty corridor → assign by latitude rule
     ger_border = gdf[
         (gdf["centroid_lon"] >= BORDER_WEST) &
         (gdf["centroid_lon"] <= BORDER_EAST)
@@ -847,6 +1013,72 @@ def split_east_west_germany_from_centroids(gdf: gpd.GeoDataFrame):
     return ger_west, ger_east
 
 
+def plot_seasonality_by_country(samples):
+    """
+    Plot posterior mean and 95% credible interval of monthly relative risk
+    for Germany and the UK (country-level).
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import arviz as az
+
+    month_eff = samples["month_effect_country"]  # (samples, country, 12)
+    sigma = samples["sigma_season"]               # (samples, country)
+
+    months = np.arange(1, 13)
+    countries = ["Germany", "UK"]
+    colors = {"Germany": "#4c72b0", "UK": "#dd8452"}
+    colors_mean = {"Germany": "#1e3457", "UK": "#803b28"}
+
+    fig, ax = plt.subplots(figsize=(14, 6))
+
+    for c_idx, country in enumerate(countries):
+
+        # --- compute seasonal log-effect ---
+        seasonal_log = sigma[:, c_idx, None] * month_eff[:, c_idx, :]
+
+        # --- re-center per posterior draw (CRUCIAL) ---
+        seasonal_log = seasonal_log - seasonal_log.mean(axis=1, keepdims=True)
+
+        # --- relative risk ---
+        rr_samples = np.exp(seasonal_log)
+
+        rr_mean = rr_samples.mean(axis=0)
+        rr_hdi = az.hdi(rr_samples, hdi_prob=0.95)
+
+        ax.fill_between(
+            months,
+            rr_hdi[:, 0],
+            rr_hdi[:, 1],
+            color=colors[country],
+            alpha=0.25
+        )
+
+        ax.plot(
+            months,
+            rr_mean,
+            marker="o",
+            lw=2.5,
+            color=colors_mean[country],
+            label=country
+        )
+
+    ax.axhline(1.0, color="black", linestyle="--", lw=1)
+    ax.set_xticks(months)
+    ax.set_xlabel("Month")
+    ax.set_ylabel("Relative Accident Risk")
+    ax.set_title(
+        "Seasonal Variation in Fatal Road Accident Risk\n"
+        "(Posterior Mean and 95% Credible Interval)"
+    )
+    ax.grid(True, linestyle="--", alpha=0.35)
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+
+
 def main():
     # Base directory (project root, one level up from src)
     BASE_DIR = Path(__file__).resolve().parent.parent
@@ -856,18 +1088,16 @@ def main():
     germany_acc_path = BASE_DIR / "data" / "processed" / "reduced_uk_dataset" / "modified_ger.csv"
     ger_regions_gdf = gpd.read_file(germany_geo_path)
 
-    # Keep only West Germany (roughly west of former border)
-    ger_west, ger_east = split_east_west_germany_from_centroids(ger_regions_gdf)
-
     ger_accidents_gdf = load_accidents(
         str(germany_acc_path),
         category_filters={
             "casualty_severity": [1],
-            "is_mcyle": [1]
         }
     )
-    ger_regions_with_accidents = add_accident_counts_to_regions(
-        regions_gdf=ger_west,
+    print(f"accidents gdf: {ger_accidents_gdf['month']}")
+
+    ger_regions_with_accidents = add_accident_counts_to_regions_monthly(
+        regions_gdf=ger_regions_gdf,
         accidents_gdf=ger_accidents_gdf
     )
 
@@ -883,29 +1113,63 @@ def main():
         str(uk_acc_path),
         category_filters={
             "collision_severity": [1],
-            "is_mcyle": [1]
         }
     )
-    print("UK accidents CRS:", uk_accidents_gdf.crs)
-    print("UK regions CRS:", uk_regions_gdf.crs)
+    # print("UK accidents CRS:", uk_accidents_gdf.crs)
+    # print("UK regions CRS:", uk_regions_gdf.crs)
+    # extract hour as integer
 
-    uk_regions_with_accidents = add_accident_counts_to_regions(
+    uk_regions_with_accidents = add_accident_counts_to_regions_monthly(
         regions_gdf=uk_regions_gdf,
         accidents_gdf=uk_accidents_gdf
     )
 
-    print(uk_regions_with_accidents['accident_count'].describe())
-    print(uk_regions_with_accidents['accident_count'].value_counts().head())
+    # print(uk_regions_with_accidents['accident_count'].describe())
+    # print(uk_regions_with_accidents['accident_count'].value_counts().head())
 
-    bayes_df = build_traffic_volume_bayes_dataset(ger_regions_with_accidents, uk_regions_with_accidents)
-    print(bayes_df.columns)
+    samples_path = BASE_DIR / "data" / "mcmc" / "mcmc_samples_region.npz"
 
-    mcmc = run_numpyro_model_aadf(bayes_df)
-    df_probs = get_region_probs(mcmc, bayes_df)
-    plot_expected_accidents_aadf(df_probs, mcmc)
+    if not samples_path.exists():
+        bayes_df = build_traffic_volume_bayes_dataset_seasonal(ger_regions_with_accidents, uk_regions_with_accidents)
 
-    country_post = compute_country_posteriors_aadf(mcmc, df_probs)
-    plot_country_posteriors_aadf(country_post, df_probs)
+        mcmc = run_numpyro_model_aadf_seasonal(bayes_df)
+
+        posterior = mcmc.get_samples()
+        np.savez(
+            str(samples_path),
+            **{k: np.array(v) for k, v in posterior.items()}
+        )
+    else:
+        data = np.load(str(samples_path))
+        posterior = {k: data[k] for k in data.files}
+
+    sigma_season = posterior["sigma_season"]  # shape: (samples, country)
+
+    sigma_de = sigma_season[:, 0]
+    sigma_uk = sigma_season[:, 1]
+
+    print("Germany seasonality:")
+    print(np.percentile(sigma_de, [5, 50, 95]))
+
+    print("UK seasonality:")
+    print(np.percentile(sigma_uk, [5, 50, 95]))
+
+    # Probability that Germany is more seasonal
+    prob_de_more = np.mean(sigma_de > sigma_uk)
+    print(f"P(Germany more seasonal than UK) = {prob_de_more:.3f}")
+
+    plot_seasonality_by_country(posterior)
+    print("sigma_season summary:")
+    print(posterior["sigma_season"].min(),
+          posterior["sigma_season"].mean(),
+          posterior["sigma_season"].max())
+
+    print("\nmonth_effect_country summary:")
+    print(posterior["month_effect_country"].min(),
+          posterior["month_effect_country"].mean(),
+          posterior["month_effect_country"].max())
+
+    import seaborn as sns
 
 
 if __name__ == "__main__":
