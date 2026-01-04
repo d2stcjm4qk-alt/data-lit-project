@@ -196,5 +196,13 @@ def main():
                          save_path=BASE_DIR / "results" / "figures" / "uk" / "uk_traffic_volume_per_region.png")
     '''
 
+    SEASONS = {
+        "Winter": [11, 0, 1],
+        "Spring": [2, 3, 4],
+        "Summer": [5, 6, 7],
+        "Autumn": [8, 9, 10],
+    }
+
+
 if __name__ == "__main__":
     main()

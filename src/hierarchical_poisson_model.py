@@ -140,14 +140,14 @@ def build_traffic_volume_bayes_dataset_seasonal(germany_gdf, uk_gdf):
 
         # Compute AADF weighted by road length
         df["AADF_region_combined"] = (
-            (df["AADF_A"].fillna(0) * df["osm_length_A_km"].fillna(0) +
-             df["AADF_B"].fillna(0) * df["osm_length_B_km"].fillna(0))
-            / df["osm_total_length_km"].replace(0, np.nan)
+                (df["AADF_A"].fillna(0) * df["osm_length_A_km"].fillna(0) +
+                 df["AADF_B"].fillna(0) * df["osm_length_B_km"].fillna(0))
+                / df["osm_total_length_km"].replace(0, np.nan)
         )
 
         # Annual vehicle-km exposure
         df["exposure_annual"] = (
-            df["AADF_region_combined"] * df["osm_total_length_km"]
+                df["AADF_region_combined"] * df["osm_total_length_km"]
         )
 
         df["exposure_annual"] = (
@@ -162,7 +162,7 @@ def build_traffic_volume_bayes_dataset_seasonal(germany_gdf, uk_gdf):
 
         return pd.DataFrame({
             "region_id": df["region_code"].astype(str),
-            "month": df["month"].astype(int),          # 1–12
+            "month": df["month"].astype(int),  # 1–12
             "accident_count": df["accident_count"].astype(int),
             "exposure": df["exposure"],
 
@@ -181,7 +181,6 @@ def build_traffic_volume_bayes_dataset_seasonal(germany_gdf, uk_gdf):
     print(f"Merged DE+UK seasonal rows: {len(df_combined)}")
 
     return df_combined
-
 
 
 def build_bayes_dataset(germany_gdf, uk_gdf):
@@ -268,7 +267,7 @@ def hierarchical_poisson_model_aadf(accidents, exposure, country_idx, n_countrie
     )
 
 
-def hierarchical_poisson_model_aadf_seasonal(
+def hierarchical_poisson_model_region_season(
         accidents,
         exposure,
         country_idx,
@@ -295,29 +294,30 @@ def hierarchical_poisson_model_aadf_seasonal(
     )
 
     # ----------------------------
-    # Region-level random intercepts
+    # Region random intercepts (shared scale, country-modulated)
     # ----------------------------
-    region_effect = numpyro.sample(
-        "region_effect",
+    region_raw = numpyro.sample(
+        "region_raw",
         dist.Normal(0.0, 1.0).expand([n_regions])
     )
 
+    region_effect = sigma_country[country_idx] * region_raw[region_idx]
+
     # ----------------------------
-    # Country-level seasonal pattern (log-rate scale)
+    # Country-level seasonal pattern
     # ----------------------------
     month_effect_country = numpyro.sample(
         "month_effect_country",
         dist.Normal(0.0, 0.3).expand([n_countries, n_months])
     )
 
-    # Enforce zero-mean seasonality per country (identifiability)
     month_effect_country = (
-        month_effect_country
-        - month_effect_country.mean(axis=-1, keepdims=True)
+            month_effect_country
+            - month_effect_country.mean(axis=-1, keepdims=True)
     )
 
     # ----------------------------
-    # Regional seasonal deviations (hierarchical)
+    # Regional seasonal deviations
     # ----------------------------
     tau_region_season = numpyro.sample(
         "tau_region_season",
@@ -329,31 +329,29 @@ def hierarchical_poisson_model_aadf_seasonal(
         dist.Normal(0.0, tau_region_season).expand([n_regions, n_months])
     )
 
-    # Enforce zero-mean per region
     month_effect_region = (
-        month_effect_region
-        - month_effect_region.mean(axis=-1, keepdims=True)
+            month_effect_region
+            - month_effect_region.mean(axis=-1, keepdims=True)
     )
 
     # ----------------------------
-    # Log-rate
+    # Latent regional log-rate
+    # (this is what you want!)
     # ----------------------------
-    log_lambda = (
-        mu_country[country_idx]
-        + sigma_country[country_idx] * region_effect[region_idx]
-        + month_effect_country[country_idx, month_idx]
-        + month_effect_region[region_idx, month_idx]
+    log_lambda_region = (
+            mu_country[country_idx]
+            + region_effect
+            + month_effect_country[country_idx, month_idx]
+            + month_effect_region[region_idx, month_idx]
     )
 
     # ----------------------------
-    # Exposure-adjusted Poisson rate
+    # Poisson likelihood
     # ----------------------------
-    rate = jnp.exp(jnp.clip(log_lambda, -20, 20)) * exposure
+    rate = jnp.exp(jnp.clip(log_lambda_region, -20, 20)) * exposure
     rate = jnp.clip(rate, a_min=1e-10)
 
     numpyro.sample("obs", dist.Poisson(rate), obs=accidents)
-
-
 
 
 # ==========================
@@ -424,6 +422,7 @@ def run_numpyro_model_aadf_seasonal(
 
     # Observations
     print(f'run moden df: {df.columns}')
+    print(f'MCMC df: {df}')
     accidents = df["accident_count"].to_numpy()
 
     # Exposure in million vehicle-km (monthly exposure)
@@ -446,7 +445,7 @@ def run_numpyro_model_aadf_seasonal(
     n_regions = len(region_mapping)
     n_months = 12
 
-    kernel = NUTS(hierarchical_poisson_model_aadf_seasonal)
+    kernel = NUTS(hierarchical_poisson_model_region_season)
     mcmc = MCMC(
         kernel,
         num_warmup=num_warmup,
@@ -966,53 +965,6 @@ def plot_country_posteriors_aadf(country_posteriors, df_probs):
     plt.show()
 
 
-def split_east_west_germany_from_centroids(gdf: gpd.GeoDataFrame):
-    """
-    Splits German regions into East and West using centroid longitude.
-    Corrects the common Bavaria misclassification issue.
-
-    Returns:
-        ger_west, ger_east
-    """
-
-    # Ensure WGS84 for longitude
-    if gdf.crs is None or gdf.crs.to_string() != "EPSG:4326":
-        gdf = gdf.to_crs(epsg=4326)
-
-    # Compute centroids safely in projected space, then convert back
-    gdf_metric = gdf.to_crs(epsg=3857)
-    centroids = gdf_metric.geometry.centroid.to_crs(epsg=4326)
-
-    gdf = gdf.copy()
-    gdf["centroid_lon"] = centroids.x
-    gdf["centroid_lat"] = centroids.y
-
-    # Historical inner-German border corridor (safe buffer)
-    BORDER_WEST = 10.8
-    BORDER_EAST = 11.2
-
-    # East Germany = clearly east of border
-    ger_east = gdf[gdf["centroid_lon"] > BORDER_EAST].copy()
-
-    # West Germany = everything west of border corridor
-    ger_west = gdf[gdf["centroid_lon"] < BORDER_WEST].copy()
-
-    # Regions inside the uncertainty corridor → assign by latitude rule
-    ger_border = gdf[
-        (gdf["centroid_lon"] >= BORDER_WEST) &
-        (gdf["centroid_lon"] <= BORDER_EAST)
-        ].copy()
-
-    # Thüringen / Saxony-Anhalt go East, Bavaria stays West
-    ger_border_west = ger_border[ger_border["centroid_lat"] < 50.5]
-    ger_border_east = ger_border[ger_border["centroid_lat"] >= 50.5]
-
-    ger_west = pd.concat([ger_west, ger_border_west])
-    ger_east = pd.concat([ger_east, ger_border_east])
-
-    return ger_west, ger_east
-
-
 def plot_seasonality_by_country(samples):
     """
     Plot posterior mean and 95% credible interval of monthly relative risk
@@ -1023,7 +975,7 @@ def plot_seasonality_by_country(samples):
     import arviz as az
 
     month_eff = samples["month_effect_country"]  # (samples, country, 12)
-    sigma = samples["sigma_season"]               # (samples, country)
+    sigma = samples["sigma_season"]  # (samples, country)
 
     months = np.arange(1, 13)
     countries = ["Germany", "UK"]
@@ -1033,7 +985,6 @@ def plot_seasonality_by_country(samples):
     fig, ax = plt.subplots(figsize=(14, 6))
 
     for c_idx, country in enumerate(countries):
-
         # --- compute seasonal log-effect ---
         seasonal_log = sigma[:, c_idx, None] * month_eff[:, c_idx, :]
 
@@ -1077,6 +1028,127 @@ def plot_seasonality_by_country(samples):
     plt.show()
 
 
+def compute_seasonal_region_rates_from_posterior(
+        posterior,
+        country_idx_per_region,
+        seasons,
+        reduce="mean"
+):
+    """
+    Returns:
+        seasonal_rates: dict(season -> array[n_regions])
+    """
+
+    mu = posterior["mu_country"]  # (S, C)
+    sigma = posterior["sigma_country"]  # (S, C)
+    region_raw = posterior["region_raw"]  # (S, R)
+    month_country = posterior["month_effect_country"]  # (S, C, M)
+    month_region = posterior["month_effect_region"]  # (S, R, M)
+
+    S, R = region_raw.shape
+    seasonal_rates = {}
+
+    # 🔑 correct per-region country parameters
+    mu_region = np.take(mu, country_idx_per_region, axis=1)  # (S, R)
+    sigma_region = np.take(sigma, country_idx_per_region, axis=1)  # (S, R)
+    print(f'sigma_region shape: {sigma_region.shape}')
+
+    for season, months in seasons.items():
+        log_lambda = (
+                mu_region
+                + sigma_region * region_raw
+                + np.take(month_country, country_idx_per_region, axis=1)[:, :, months].mean(axis=-1)
+                + month_region[:, :, months].mean(axis=-1)
+        )  # (S, R)
+
+        lambda_rate = np.exp(log_lambda)
+
+        if reduce == "mean":
+            seasonal_rates[season] = lambda_rate.mean(axis=0)
+        elif reduce == "median":
+            seasonal_rates[season] = np.median(lambda_rate, axis=0)
+        else:
+            raise ValueError("reduce must be 'mean' or 'median'")
+
+    return seasonal_rates
+
+
+def plot_dominant_season_country(
+    regions_gdf,
+    seasonal_rates,
+    country_name,
+    save_path=None
+):
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+    import contextily as ctx
+    import numpy as np
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+    gdf = regions_gdf.to_crs(epsg=3857)
+
+    season_names = list(seasonal_rates.keys())
+    values = np.vstack([seasonal_rates[s] for s in season_names]).T
+
+    dominant_idx = np.argmax(values, axis=1)
+    gdf["dominant_season"] = np.array(season_names)[dominant_idx]
+    gdf["dominant_rate"] = values[np.arange(len(gdf)), dominant_idx]
+
+    # Define seasonal colormaps
+    season_cmaps = {
+        "Winter": "Blues",
+        "Spring": "Greens",
+        "Summer": "YlOrBr",
+        "Autumn": "Greys",
+    }
+
+    # Global norm for all seasons, avoid pure white for low values by setting vmin > 0.7
+    global_vmin = 0.5
+    global_vmax = 2.0
+    norms = {s: mcolors.LogNorm(vmin=global_vmin, vmax=global_vmax) for s in season_names}
+
+    # Plot main map
+    fig, ax = plt.subplots(figsize=(8, 10))
+    for season in season_names:
+        mask = gdf["dominant_season"] == season
+        if not mask.any():
+            continue
+        gdf.loc[mask].plot(
+            ax=ax,
+            column="dominant_rate",
+            cmap=season_cmaps[season],
+            norm=norms[season],
+            edgecolor="gray",
+            linewidth=0.3,
+            alpha=0.85
+        )
+
+    ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron, zoom=7, alpha=0.5)
+    ax.set_title(f"Dominant Seasonal Accident Rate – {country_name}")
+    ax.axis("off")
+
+    # Create 2x2 grid of colorbars
+    fig.subplots_adjust(right=0.8, hspace=0.4, wspace=0.4)
+    cb_axs = []
+    for i, season in enumerate(season_names):
+        row = i // 2
+        col = i % 2
+        cb_ax = fig.add_axes([0.82 + col * 0.08, 0.65 - row * 0.25, 0.02, 0.18])
+        sm = plt.cm.ScalarMappable(cmap=season_cmaps[season], norm=norms[season])
+        sm._A = []
+        cb = plt.colorbar(sm, cax=cb_ax)
+        cb.ax.set_title(season, fontsize=9, pad=2)
+        cb_axs.append(cb_ax)
+
+    # Shared x-axis label beneath all colorbars
+    fig.text(0.82, 0.05, "accidents per billion vehicle-km", rotation=0, fontsize=10)
+
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+
+    plt.show()
+
+
 
 
 def main():
@@ -1094,12 +1166,13 @@ def main():
             "casualty_severity": [1],
         }
     )
-    print(f"accidents gdf: {ger_accidents_gdf['month']}")
 
     ger_regions_with_accidents = add_accident_counts_to_regions_monthly(
         regions_gdf=ger_regions_gdf,
         accidents_gdf=ger_accidents_gdf
     )
+
+    print(f'ger regions: {ger_regions_with_accidents}')
 
     # UK datasets
     # uk_geo_path = BASE_DIR / "data" / "processed" / "geo_data" / "UK_merged.geojson"
@@ -1143,33 +1216,146 @@ def main():
         data = np.load(str(samples_path))
         posterior = {k: data[k] for k in data.files}
 
-    sigma_season = posterior["sigma_season"]  # shape: (samples, country)
+
+    print(f'posterior: {posterior}')
+    # month_effect_country: (samples, country, month)
+    month_eff = posterior["month_effect_country"]
+
+    # Seasonality strength per sample & country
+    # (std over months on log-rate scale)
+    sigma_season = month_eff.std(axis=-1)  # shape: (samples, country)
 
     sigma_de = sigma_season[:, 0]
     sigma_uk = sigma_season[:, 1]
 
-    print("Germany seasonality:")
+    print("Germany seasonality (std over months):")
     print(np.percentile(sigma_de, [5, 50, 95]))
 
-    print("UK seasonality:")
+    print("\nUK seasonality (std over months):")
     print(np.percentile(sigma_uk, [5, 50, 95]))
 
-    # Probability that Germany is more seasonal
+    # Probability Germany is more seasonal than UK
     prob_de_more = np.mean(sigma_de > sigma_uk)
-    print(f"P(Germany more seasonal than UK) = {prob_de_more:.3f}")
+    print(f"\nP(Germany more seasonal than UK) = {prob_de_more:.3f}")
 
-    plot_seasonality_by_country(posterior)
-    print("sigma_season summary:")
-    print(posterior["sigma_season"].min(),
-          posterior["sigma_season"].mean(),
-          posterior["sigma_season"].max())
+    print("\nsigma_season summary:")
+    print(
+        sigma_season.min(),
+        sigma_season.mean(),
+        sigma_season.max()
+    )
 
     print("\nmonth_effect_country summary:")
-    print(posterior["month_effect_country"].min(),
-          posterior["month_effect_country"].mean(),
-          posterior["month_effect_country"].max())
+    print(
+        month_eff.min(),
+        month_eff.mean(),
+        month_eff.max()
+    )
 
-    import seaborn as sns
+    # month_effect_country: shape (samples, country, month)
+    month_eff = posterior["month_effect_country"]
+
+    months = np.arange(1, 13)
+
+    # Compute posterior mean and 5th/95th percentiles
+    mean_de = month_eff[:, 0, :].mean(axis=0)
+    ci_de = np.percentile(month_eff[:, 0, :], [5, 95], axis=0)
+
+    mean_uk = month_eff[:, 1, :].mean(axis=0)
+    ci_uk = np.percentile(month_eff[:, 1, :], [5, 95], axis=0)
+
+    plt.figure(figsize=(8, 4))
+
+    # Germany
+    plt.plot(months, mean_de, label="Germany", color="blue")
+    plt.fill_between(months, ci_de[0], ci_de[1], color="blue", alpha=0.3)
+
+    # UK
+    plt.plot(months, mean_uk, label="UK", color="green")
+    plt.fill_between(months, ci_uk[0], ci_uk[1], color="green", alpha=0.3)
+
+    plt.xticks(months)
+    plt.xlabel("Month")
+    plt.ylabel("Country-level seasonal effect (log-rate)")
+    plt.title("Posterior monthly seasonality by country")
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+    SEASONS = {
+        "Winter": [11, 0, 1],
+        "Spring": [2, 3, 4],
+        "Summer": [5, 6, 7],
+        "Autumn": [8, 9, 10],
+    }
+    ger_region_ids = (
+        ger_regions_with_accidents["index_right"]
+        .drop_duplicates()
+        .sort_values()
+        .to_numpy()
+    )
+
+    uk_region_ids = (
+        uk_regions_with_accidents["index_right"]
+        .drop_duplicates()
+        .sort_values()
+        .to_numpy()
+    )
+    country_idx_per_region = np.concatenate([
+        np.zeros(len(ger_region_ids), dtype=int),  # Germany = 0
+        np.ones(len(uk_region_ids), dtype=int)  # UK = 1
+    ])
+
+    print('111111111111111111111')
+    seasonal_rates = compute_seasonal_region_rates_from_posterior(
+        posterior=posterior,
+        country_idx_per_region=country_idx_per_region,
+        seasons=SEASONS,
+        reduce="mean"  # or "median"
+    )
+
+    for season, rates in seasonal_rates.items():
+        print(season, rates.min(), rates.mean(), rates.max())
+
+    regions_gdf_all = pd.concat(
+        [ger_regions_with_accidents, uk_regions_with_accidents],
+        ignore_index=True
+    )
+    print(f'uk length: {len(uk_regions_with_accidents)}')
+
+    regions_gdf_all = (
+        regions_gdf_all
+        .drop_duplicates(subset="index_right")
+        .sort_values("index_right")
+        .reset_index(drop=True)
+    )
+
+    # Must align with posterior region dimension
+    print(f'regipons_gdf_all: {len(regions_gdf_all)}, country_idx_per_region: {len(country_idx_per_region)}')
+
+    COUNTRY_MAP = {
+        "Germany": 0,
+        "UK": 1,
+    }
+
+    country_name = "Germany"  # or "UK"
+    country_code = COUNTRY_MAP[country_name]
+
+    mask = country_idx_per_region == country_code
+    print(f'regions_gdf_all: {len(regions_gdf_all)}')
+    regions_gdf_country = regions_gdf_all.copy()
+
+    seasonal_rates_country = {
+        season: rates[mask]
+        for season, rates in seasonal_rates.items()
+    }
+
+    plot_dominant_season_country(
+        regions_gdf=regions_gdf_country,
+        seasonal_rates=seasonal_rates_country,
+        country_name=country_name
+    )
 
 
 if __name__ == "__main__":
