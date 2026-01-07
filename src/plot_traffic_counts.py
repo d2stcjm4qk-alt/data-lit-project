@@ -6,7 +6,49 @@ from pathlib import Path
 import geopandas as gpd
 from typing import Optional, Dict, Tuple, List, Union
 import numpy as np
-from hierarchical_poisson_model import load_accidents, add_accident_counts_to_regions
+from hierarchical_poisson_model import load_accidents
+
+
+def add_accident_counts_to_regions(
+        regions_gdf: gpd.GeoDataFrame,
+        accidents_gdf: gpd.GeoDataFrame,
+        region_id_col: str = None
+) -> gpd.GeoDataFrame:
+    """
+    Adds a column to regions_gdf with the count of accidents falling within each region.
+
+    Parameters:
+        regions_gdf (GeoDataFrame): GeoDataFrame with polygon geometries (regions).
+        accidents_gdf (GeoDataFrame): GeoDataFrame with point geometries (accidents).
+        region_id_col (str, optional): Column in regions_gdf to use as identifier (default uses index).
+
+    Returns:
+        GeoDataFrame: regions_gdf with a new column 'accident_count'.
+    """
+
+    regions_gdf = regions_gdf.to_crs(accidents_gdf.crs)
+
+    # Spatial join: attach region info to each accident
+    accidents_with_region = gpd.sjoin(
+        accidents_gdf, regions_gdf, how="left", predicate="within"
+    )
+
+    # Count accidents per region
+    accident_counts = (
+        accidents_with_region
+        .groupby("index_right")
+        .size()
+        .rename("accident_count")
+    )
+
+    # Merge counts back to regions_gdf
+    regions_with_counts = regions_gdf.copy()
+    regions_with_counts = regions_with_counts.merge(
+        accident_counts, left_index=True, right_index=True, how="left"
+    )
+
+    # Fill regions with 0 accidents
+    regions_with_counts["accident_count"] = regions_with_counts["accident_count"].fillna(0).astype(int)
 
 
 def plot_vehicles_per_km(
@@ -182,26 +224,12 @@ def main():
     print(f'AADF_region_weighted: {ger_regions_gdf["AADF_region_weighted"]}')
     print(f'vehicle_km_per_day: {ger_regions_with_accidents["vehicle_km_per_day"]}')
     ger_regions_with_accidents["accidents_per_vehicle_km"] = (
-            ger_regions_with_accidents["accident_count"] / (ger_regions_with_accidents["vehicle_km_per_day"].replace(0, np.nan) * 365) * 1e9
+            ger_regions_with_accidents["accident_count"] / (
+                ger_regions_with_accidents["vehicle_km_per_day"].replace(0, np.nan) * 365) * 1e9
     )
-    print(f'accidents_per_vehicle_km: {ger_regions_with_accidents["accidents_per_vehicle_km"]}')
     plot_vehicles_per_km(ger_regions_with_accidents, column_aadf_accidents="accidents_per_vehicle_km",
                          save_path=BASE_DIR / "results" / "figures" / "germany" / "germany_accidents_per_traffic_volume_per_region.png",
                          label="Accidents / Vehicles per km")
-
-    '''
-    uk_geo_path = BASE_DIR / "data" / "preprocessed" / "uk" / "traffic" / "uk_gdf_with_osm_roads.gpkg"
-    uk_regions_gdf = gpd.read_file(uk_geo_path)
-    plot_vehicles_per_km(uk_regions_gdf, vmax=1045,
-                         save_path=BASE_DIR / "results" / "figures" / "uk" / "uk_traffic_volume_per_region.png")
-    '''
-
-    SEASONS = {
-        "Winter": [11, 0, 1],
-        "Spring": [2, 3, 4],
-        "Summer": [5, 6, 7],
-        "Autumn": [8, 9, 10],
-    }
 
 
 if __name__ == "__main__":
