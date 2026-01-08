@@ -1,85 +1,94 @@
 import geopandas as gpd
-from pathlib import Path
-import os
 import pandas as pd
-import plotly.express as px
+from pathlib import Path
+import matplotlib.pyplot as plt
 
 
-def load_accidents(
-        path: str,
-        category_filters: dict | None = None
-):
-    df = pd.read_csv(path, sep=",", dtype=str)
+class AccidentNormalizer:
+    """
+    Handles spatial joining of accident points to regions and
+    calculates population-based normalization metrics.
+    """
 
-    df["longitude"] = (
-        df["longitude"]
-        .str.replace(",", ".", regex=False)
-        .astype(float)
-    )
+    def __init__(self, regions_gdf: gpd.GeoDataFrame):
+        self.regions = regions_gdf
+        if self.regions.crs is None:
+            raise ValueError("Regions GeoDataFrame must have a defined CRS.")
 
-    df["latitude"] = (
-        df["latitude"]
-        .str.replace(",", ".", regex=False)
-        .astype(float)
-    )
+    def load_accident_data(self, path: Path, filters: dict = None) -> gpd.GeoDataFrame:
+        """Loads raw CSV, cleans coordinates, and converts to GeoDataFrame."""
+        df = pd.read_csv(path, sep=",", dtype=str)
 
-    # Apply user-specified filters
-    if category_filters:
-        for col, allowed in category_filters.items():
-            df = df[df[col].isin(allowed)]
+        # Clean and convert coordinates
+        for col in ["longitude", "latitude"]:
+            df[col] = df[col].str.replace(",", ".", regex=False).astype(float)
 
-    return df
+        # Apply filtering (e.g., fatality severity only)
+        if filters:
+            for col, allowed_values in filters.items():
+                df = df[df[col].isin(allowed_values)]
+
+        gdf = gpd.GeoDataFrame(
+            df,
+            geometry=gpd.points_from_xy(df.longitude, df.latitude),
+            crs="EPSG:4326"
+        )
+        return gdf.to_crs(self.regions.crs)
+
+    def attach_regions_and_count(self, accidents_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        """Performs spatial join and aggregates accident counts per region."""
+        # Spatial join
+        joined = gpd.sjoin(accidents_gdf, self.regions, how="left", predicate="within")
+
+        # Aggregate counts
+        counts = joined.groupby("region_code").size().rename("accident_count").reset_index()
+
+        # Merge back to master regions GeoDataFrame
+        self.regions = self.regions.merge(counts, on="region_code", how="left")
+        self.regions["accident_count"] = self.regions["accident_count"].fillna(0)
+
+        return self.regions
+
+    def normalize_by_population(self, scale: int = 100_000):
+        """Calculates the normalized rate (default: per 100k inhabitants)."""
+        self.regions[f"accidents_per_{scale // 1000}k"] = (
+                self.regions["accident_count"] / self.regions["population"] * scale
+        )
+        return self.regions
+
+    def plot_results(self, column: str = "accidents_per_100k", title: str = "Accident Distribution"):
+        """Quick diagnostic plot to verify spatial join and normalization."""
+        fig, ax = plt.subplots(1, 1, figsize=(10, 12))
+        self.regions.plot(
+            column=column,
+            cmap="OrRd",
+            legend=True,
+            ax=ax,
+            legend_kwds={'label': f"Rate ({column})", 'orientation': "horizontal"}
+        )
+        ax.set_title(title)
+        ax.axis("off")
+        plt.show()
 
 
-# Base directory (project root, one level up from src)
-BASE_DIR = Path(__file__).resolve().parent.parent
-regions = gpd.read_file(BASE_DIR / "data" / "processed" / "geo_data" / "Germany_merged.geojson")
+# --- Example Usage for Reproducibility ---
+if __name__ == "__main__":
+    BASE_DIR = Path(__file__).resolve().parent.parent
 
-regions.crs
+    # 1. Load your 500k-merged regions
+    region_path = BASE_DIR / "data" / "processed" / "geo_data" / "Germany_merged.geojson"
+    regions_gdf = gpd.read_file(region_path)
 
-germany_acc_path = BASE_DIR / "data" / "processed" / "reduced_uk_dataset" / "modified_ger.csv"
-ger_acc_df = load_accidents(
-    str(germany_acc_path),
-    category_filters={
-        "casualty_severity": ["1"],
-    }
-)
+    # 2. Initialize Normalizer
+    normalizer = AccidentNormalizer(regions_gdf)
 
-# Convert dataframe into a GeoDataFrame
-accidents_gdf = gpd.GeoDataFrame(
-    ger_acc_df,
-    geometry=gpd.points_from_xy(
-        ger_acc_df.longitude,
-        ger_acc_df.latitude
-    ),
-    crs="EPSG:4326"
-)
+    # 3. Process Accidents
+    acc_path = BASE_DIR / "data" / "processed" / "reduced_uk_dataset" / "modified_ger.csv"
+    acc_gdf = normalizer.load_accident_data(acc_path, filters={"casualty_severity": ["1"]})
 
-accidents_gdf = accidents_gdf.to_crs(regions.crs)
+    # 4. Generate Final Dataset
+    final_regions = normalizer.attach_regions_and_count(acc_gdf)
+    final_regions = normalizer.normalize_by_population(scale=100_000)
 
-accidents_with_region = gpd.sjoin(
-    accidents_gdf,
-    regions,
-    how="left",
-    predicate="within"  # or "intersects"
-)
-
-accident_counts = (
-    accidents_with_region
-    .groupby("region_code")
-    .size()
-    .rename("accident_count")
-    .reset_index()
-)
-
-regions = regions.merge(
-    accident_counts,
-    on="region_code",
-    how="left"
-)
-
-regions["accident_count"] = regions["accident_count"].fillna(0)
-regions["accidents_per_100k"] = (
-        regions["accident_count"] / regions["population"] * 100_000
-)
-
+    # 5. Diagnostic Plot: Check if the map looks correct (no empty regions where expected)
+    normalizer.plot_results(title="Fatal Accidents per 100k Inhabitants (Germany)")

@@ -20,6 +20,7 @@ import matplotlib.colors as mcolors
 import contextily as ctx
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import rcParams
+import calendar
 
 
 # Load accidents data
@@ -163,7 +164,11 @@ def build_traffic_volume_bayes_dataset_seasonal(germany_gdf, uk_gdf):
         )
 
         # Monthly exposure (assumed uniform)
-        df["exposure"] = df["exposure_annual"] / 12.0
+        # days in month (non-leap year)
+        df["days_in_month"] = df["month"].apply(lambda m: calendar.monthrange(2023, m)[1])
+        # vehicle-km per month
+        df["exposure"] = df["exposure_annual"] * df["days_in_month"]
+        #df["exposure"] = df["accidents_per_vehicle_km"] / 12.0
 
         return pd.DataFrame({
             "region_id": df["region_code"].astype(str),
@@ -203,7 +208,7 @@ def hierarchical_poisson_model_region_season(
     # ----------------------------
     mu_country = numpyro.sample(
         "mu_country",
-        dist.Normal(-10.0, 5.0).expand([n_countries])
+        dist.Normal(1.0, 2.0).expand([n_countries])
     )
 
     # ----------------------------
@@ -285,7 +290,7 @@ def run_numpyro_model_aadf_seasonal(
     accidents = df["accident_count"].to_numpy()
 
     # Exposure in a billion vehicle-km (monthly exposure)
-    exposure = (df["exposure"] / 1e6).to_numpy()
+    exposure = (df["exposure"] / 1e9).to_numpy()
 
     # Country index
     country_idx = df["country"].map(
@@ -412,7 +417,7 @@ def compute_seasonal_region_rates_from_posterior(
     seasonal_rates = {}
 
     # 🔑 correct per-region country parameters
-    mu_region = np.take(mu, country_idx_per_region, axis=1)  # (S, R)
+    mu_region = np.take(mu, country_idx_per_region, axis=1, mode='clip')  # (S, R)
     sigma_region = np.take(sigma, country_idx_per_region, axis=1)  # (S, R)
     print(f'sigma_region shape: {sigma_region.shape}')
 
