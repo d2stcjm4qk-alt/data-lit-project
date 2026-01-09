@@ -71,26 +71,12 @@ def plot_vehicles_per_km(
     Returns (scale_width_m, (xlim, ylim)) for reuse.
     """
 
-    # -------------------
-    # Compute vehicles per km
-    # -------------------
     gdf_plot = regions_gdf.copy()
-
-    # Avoid division by zero
-    # gdf_plot["vehicles_per_km"] = gdf_plot[column_aadf].fillna(0) / gdf_plot[column_length].replace(0, np.nan)
-
-    # -------------------
-    # Simplify geometries if requested
-    # -------------------
     if simplify_tolerance is not None:
         gdf_plot["geometry"] = gdf_plot["geometry"].simplify(tolerance=simplify_tolerance)
 
-    # Project to Web Mercator for plotting
     gdf_plot = gdf_plot.to_crs(epsg=3857)
 
-    # -------------------
-    # Color scale
-    # -------------------
     if vmin is None:
         vmin = gdf_plot[column_aadf_accidents].replace(0, np.nan).min()
     if vmax is None:
@@ -99,9 +85,6 @@ def plot_vehicles_per_km(
     print(f'min: {vmin}, max: {vmax}, mean: {gdf_plot[column_aadf_accidents].replace(0, np.nan).mean()}')
     norm = mcolors.LogNorm(vmin=max(vmin, 1e-2), vmax=vmax)  # small epsilon to avoid log(0)
 
-    # -------------------
-    # Plot
-    # -------------------
     plt.rcParams.update({
         "text.usetex": True,
         "font.family": "serif",
@@ -121,12 +104,8 @@ def plot_vehicles_per_km(
         legend_kwds={'label': label, 'shrink': 0.6}
     )
 
-    # Add basemap
     ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron, zoom=7, alpha=0.5)
 
-    # -------------------
-    # Physical scale / zoom
-    # -------------------
     if reuse_zoom is not None:
         xlim, ylim = reuse_zoom
         ax.set_xlim(xlim)
@@ -153,9 +132,6 @@ def plot_vehicles_per_km(
         ax.set_xlim(xlim)
         ax.set_ylim(ylim)
 
-    # -------------------
-    # Plot prominent cities
-    # -------------------
     if prominent_cities:
         project = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
         for label, ((lon, lat), (dx, dy)) in prominent_cities.items():
