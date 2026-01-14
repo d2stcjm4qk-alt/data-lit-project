@@ -135,6 +135,7 @@ def hierarchical_poisson_model(accidents, exposure, country_idx, region_idx, mon
     month_country = month_country - month_country.mean(axis=-1, keepdims=True)
 
     # non-centered reparameterization
+    # (based on: https://mc-stan.org/docs/2_18/stan-users-guide/reparameterization-section.html)
     tau_region_season = numpyro.sample("tau_region_season", dist.HalfNormal(0.5))
 
     # Sample from a standard normal first
