@@ -119,6 +119,20 @@ def build_bayes_dataset(germany_gdf, uk_gdf):
 
     return pd.concat([process_country(germany_gdf, "Germany"), process_country(uk_gdf, "UK")], ignore_index=True)
 
+def build_bayes_dataset_population(germany_gdf, uk_gdf):
+    def process_country(gdf, name):
+        df = gdf.copy()
+
+        return pd.DataFrame({
+            "region_id": df["region_code"].astype(str),
+            "month": df["month"].astype(int),
+            "accident_count": df["accident_count"].astype(int),
+            "exposure": df["population"],
+            "country": name
+        })
+
+    return pd.concat([process_country(germany_gdf, "Germany"), process_country(uk_gdf, "UK")], ignore_index=True)
+
 
 def hierarchical_poisson_model(accidents, exposure, country_idx, region_idx, month_idx, n_countries, n_regions,
                                n_months=12):
@@ -241,9 +255,9 @@ def main():
                                  category_filters={"collision_severity": [1]})
     uk_merged = proc.aggregate_by_region_monthly(uk_regions, uk_acc)
 
-    samples_path = BASE_DIR / "data/mcmc/mcmc_samples_region.npz"
+    samples_path = BASE_DIR / "data/mcmc/mcmc_samples_region_population.npz"
     if not samples_path.exists():
-        bayes_df = build_bayes_dataset(ger_merged, uk_merged)
+        bayes_df = build_bayes_dataset_population(ger_merged, uk_merged)
         posterior = run_mcmc_analysis(bayes_df)
         np.savez(samples_path, **{k: np.array(v) for k, v in posterior.items()})
     else:
