@@ -26,11 +26,11 @@ rcParams.update({
     "text.usetex": True,
     "font.family": "serif",
     "font.serif": ["Computer Modern Roman"],
-    "axes.labelsize": 14,
+    "axes.labelsize": 16,
     "axes.titlesize": 16,
-    "xtick.labelsize": 12,
-    "ytick.labelsize": 12,
-    "legend.fontsize": 12,
+    "xtick.labelsize": 16,
+    "ytick.labelsize": 16,
+    "legend.fontsize": 16,
 })
 
 SEASONS = {
@@ -231,7 +231,7 @@ def plot_country_seasonality(posterior, country_names=("Germany", "UK")):
 
     plt.xticks(months, month_labels)
     plt.ylabel("Log-rate Effect")
-    plt.title("National Seasonal Patterns")
+    #plt.title("National Seasonal Patterns")
     plt.legend()
     plt.grid(alpha=0.2)
     plt.show()
@@ -255,9 +255,9 @@ def main():
                                  category_filters={"collision_severity": [1]})
     uk_merged = proc.aggregate_by_region_monthly(uk_regions, uk_acc)
 
-    samples_path = BASE_DIR / "data/mcmc/mcmc_samples_region_population.npz"
+    samples_path = BASE_DIR / "data/mcmc/mcmc_samples_region.npz"
     if not samples_path.exists():
-        bayes_df = build_bayes_dataset_population(ger_merged, uk_merged)
+        bayes_df = build_bayes_dataset(ger_merged, uk_merged)
         posterior = run_mcmc_analysis(bayes_df)
         np.savez(samples_path, **{k: np.array(v) for k, v in posterior.items()})
     else:
