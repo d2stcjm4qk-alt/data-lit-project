@@ -20,7 +20,7 @@ United Kingdom.
 - **Source:** Official national road safety statistics (see report for full references)
 
 Raw data are stored in `data/raw/`, while cleaned and processed datasets are saved in
-`data/processed/`.
+`data/preprocessed/`. Fine more information about the datasets [here]([https://www.openai.com](https://github.com/d2stcjm4qk-alt/data-lit-project/blob/main/data/README.md))
 
 ---
 
