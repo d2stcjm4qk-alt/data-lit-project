@@ -28,3 +28,31 @@ osmium tags-filter "path/to/input.osm.pbf" \
   -o "path/to/output.osm.pbf" --overwrite
 
 Apply this for both, UK and Germany streetmaps and only work with these!
+
+## Links to all datasets
+
+### Accidents
+- Germany:
+- UK:
+
+### Population
+- UK:
+- Germany:
+- Berlin: https://download.statistik-berlin-brandenburg.de/eac90c8b858f8cac/9d46fc1fd059/SB_A01-05-00_2025h01_BE.xlsx
+- Munich: https://opendata.muenchen.de/dataset/e3f5dbd2-39cc-40cd-bc91-4bb49a0b1802/resource/a641ce6a-4e01-4f4b-9976-1ae6a47e3762/download/bevolkerung_bezirke_neu.csv
+- Hamburg: https://hub.arcgis.com/datasets/esri-de-content::stadtteile-hamburg/explore?location=53.567224%2C10.027704%2C11
+
+### Regions
+- UK:
+- Germany:
+- Berlin: https://daten.berlin.de/datensaetze/rbs-bezirke-dezember-2015
+- Munich: https://hub.arcgis.com/datasets/f7f4d6e8090742c6b774379780bd7d9b_0/explore?location=48.154871%2C11.541844%2C11
+- Hamburg: https://hub.arcgis.com/datasets/esri-de-content::stadtteile-hamburg/explore?location=53.567224%2C10.027704%2C11
+
+### Traffic
+- Germany:
+- UK:
+
+### OSM
+- Germany:
+- UK:
