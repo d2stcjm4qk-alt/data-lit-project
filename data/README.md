@@ -5,7 +5,7 @@ This directory contains all datasets used in the analysis, separated into **raw*
 - `raw/` contains unprocessed datasets as obtained from the original sources (e.g., OpenStreetMap and national accident statistics).
 - `preprocess/` contains filtered and cleaned datasets used directly in the analysis.
 
-Because several datasets exceed GitHub’s file size limits, a link to the **complete data archive** (including all raw and processed files) is provided [here](https://unitc-my.sharepoint.com/:f:/g/personal/zxosr65_s-cloud_uni-tuebingen_de/IgDBnJlNNBvpRIr6TGh6QUZNAfX6Ivh91Fe16lmBpICeN8w?e=qmEOZu).
+Because several datasets exceed GitHub’s file size limits, the **complete data archive**, including all raw and processed files, is provided directly [here](https://unitc-my.sharepoint.com/:f:/g/personal/zxosr65_s-cloud_uni-tuebingen_de/IgDBnJlNNBvpRIr6TGh6QUZNAfX6Ivh91Fe16lmBpICeN8w?e=qmEOZu). We strongly recommend using this bundled data folder, as reproducing the dataset would otherwise require collecting multiple sources from different providers.
 
 For OpenStreetMap (OSM) data, raw `.osm.pbf` files are very large. We therefore strongly recommend filtering major road classes using **Osmium Tool** before further processing. All analyses are based on these filtered OSM datasets for **Germany** and the **UK**.
 
