@@ -493,8 +493,8 @@ def plot_population(
 
 
 def uk_preprocessing(BASE_DIR, scale_ref):
-    uk_shp_path = BASE_DIR / "data" / "raw" / "UK" / "regions" / "Local_Authority_Districts_May_2024_Boundaries_UK/LAD_MAY_2024_UK_BFE.shp"
-    uk_pop_path = BASE_DIR / "data" / "raw" / "UK" / "population" / "mye24tablesuk.xlsx"
+    uk_shp_path = BASE_DIR / "data" / "raw" / "uk" / "regions" / "Local_Authority_Districts_May_2024_Boundaries_UK/LAD_MAY_2024_UK_BFE.shp"
+    uk_pop_path = BASE_DIR / "data" / "raw" / "uk" / "population" / "mye24tablesuk.xlsx"
 
     # --- UK cities (lon/lat, offsets in meters) ---
     uk_cities = {
@@ -510,13 +510,13 @@ def uk_preprocessing(BASE_DIR, scale_ref):
                                    code_col_keywords=("Code",), pop_col_keywords=("All ages",))
     uk_lad = attach_population(uk_lad, uk_pop, region_code_col="LAD24CD")
     # Merge small regions to target population
-    # merged_uk = merge_small_regions(uk_lad, pop_col="population", target_population=500_000,
-    #                                remove_below=150_000)
-    # merged_uk.to_file(BASE_DIR / "data" / "processed" / "geo_data" / "UK_merged.geojson",
-    #                  driver="GeoJSON")
+    merged_uk = merge_small_regions(uk_lad, pop_col="population", target_population=500_000,
+                                    remove_below=150_000)
+    merged_uk.to_file(BASE_DIR / "data" / "preprocessed" /"uk" / "geofiles" / "UK_merged.geojson",
+                     driver="GeoJSON")
     os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] = "0"  # No size limit
     gdf = gpd.read_file(
-        BASE_DIR / "data" / "processed" / "geo_data" / "UK_merged.geojson"
+        BASE_DIR / "data" / "preprocessed" / "uk" / "geofiles" / "UK_merged.geojson"
     )
     uk_scale_ref, zoom_coord= plot_population(gdf, prominent_cities=uk_cities,
                     title="UK population of merged regions",
@@ -536,11 +536,11 @@ def main():
     BASE_DIR = Path(__file__).resolve().parent.parent
 
     # Paths to data
-    germany_shp_path = BASE_DIR / "data" / "raw" / "Germany" / "regions" / "vg250-ew_12-31.utm32s.shape.ebenen/vg250-ew_12-31.utm32s.shape.ebenen/vg250-ew_ebenen_1231/VG250_KRS.shp"
-    germany_pop_path = BASE_DIR / "data" / "raw" / "Germany" / "population" / "04-kreise.xlsx"
+    germany_shp_path = BASE_DIR / "data" / "raw" / "germany" / "regions" / "vg250-ew_12-31.utm32s.shape.ebenen/vg250-ew_12-31.utm32s.shape.ebenen/vg250-ew_ebenen_1231/VG250_KRS.shp"
+    germany_pop_path = BASE_DIR / "data" / "raw" / "germany" / "population" / "04-kreise.xlsx"
 
     df_berlin = load_district_population(
-        file_path= str(BASE_DIR / "data" / "raw" / "Germany" / "population" / "SB_A01-05-00_2025h01_BE.xlsx"),
+        file_path= str(BASE_DIR / "data" / "raw" / "germany" / "population" / "SB_A01-05-00_2025h01_BE.xlsx"),
         sheet=5,  # 5th sheet
         header_row=6,  # headers on row 8
         district_col=0,
@@ -551,7 +551,7 @@ def main():
     )
 
     df_munich = load_district_population(
-        file_path=str(BASE_DIR / "data" / "raw" / "Germany" / "population" / "bevolkerung_bezirke_neu.csv"),
+        file_path=str(BASE_DIR / "data" / "raw" / "germany" / "population" / "bevolkerung_bezirke_neu.csv"),
         sheet=0,  # 5th sheet
         header_row=0,  # headers on row 8
         district_col=1,
@@ -566,7 +566,7 @@ def main():
         {
             "name": "Berlin",
             "region_code": "11000",
-            "shape_path": BASE_DIR / "data" / "raw" / "Germany" / "regions" / "RBS_OD_BEZ_2015_12/RBS_OD_BEZ_2015_12.shp",
+            "shape_path": BASE_DIR / "data" / "raw" / "germany" / "regions" / "RBS_OD_BEZ_2015_12/RBS_OD_BEZ_2015_12.shp",
             # https://daten.berlin.de/datensaetze/rbs-bezirke-dezember-2015
             "population_df": df_berlin  # preloaded DataFrame with 'region_code' and 'population' columns
         },
@@ -574,13 +574,13 @@ def main():
         {
             "name": "Hamburg",
             "region_code": "02000",
-            "shape_path": BASE_DIR / "data" / "raw" / "Germany" / "regions" / "HH_ALKIS_Stadtteile_2016_6864215073834709224/Hamburg_Stadtteilestatistik.shp",
+            "shape_path": BASE_DIR / "data" / "raw" / "germany" / "regions" / "HH_ALKIS_Stadtteile_2016_6864215073834709224/Hamburg_Stadtteilestatistik.shp",
             "population_df": None
         },
         {
             "name": "Munich",
             "region_code": "09162",
-            "shape_path": BASE_DIR / "data" / "raw" / "Germany" / "regions" / "bezirke_muenchen_-8237817724309258366/bezirke_muenchen.shp",
+            "shape_path": BASE_DIR / "data" / "raw" / "germany" / "regions" / "bezirke_muenchen_-8237817724309258366/bezirke_muenchen.shp",
             "population_df": df_munich
         }
     ]
@@ -686,7 +686,7 @@ def main():
         fig.update_geos(fitbounds="locations", visible=False)
         fig.show()  # Automatically opens browser
 
-    # plot_interactive_plotly(merged_ger, "population", "region_code")
+    plot_interactive_plotly(merged_ger, "population", "region_code")
 
     plot_population(merged_ger, prominent_cities=germany_cities,
                     title="Germany population of merged regions",
@@ -695,8 +695,8 @@ def main():
 
     uk_preprocessing(BASE_DIR, scale_ref)
     # Optionally save merged layer
-    # merged_ger.to_file(BASE_DIR / "data" / "processed" / "geo_data" / "Germany_merged.geojson",
-    #                   driver="GeoJSON")
+    merged_ger.to_file(BASE_DIR / "data" / "preprocessed" / "germany" / "geofiles" / "Germany_merged.geojson",
+                      driver="GeoJSON")
 
     print("Processing complete. Merged regions saved to data/kreise_merged.geojson")
 

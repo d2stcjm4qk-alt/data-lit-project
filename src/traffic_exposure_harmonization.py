@@ -20,7 +20,7 @@ class TrafficInfrastructurePipeline:
         self.metric_crs = "EPSG:3857"
 
     def process_point_traffic(self, df: pd.DataFrame, config: dict) -> gpd.GeoDataFrame:
-        """Cleans raw traffic CSVs and performs spatial aggregation."""
+        """Cleans raw geofiles CSVs and performs spatial aggregation."""
         df = df.copy()
         t_col, l_col = config['traffic_col'], config['length_col']
         lon_col, lat_col = config['lon'], config['lat']  # Get coordinate names
@@ -96,7 +96,7 @@ def validate_plot(gdf: gpd.GeoDataFrame, country: str):
     # Ensure WGS84 for Plotly
     gdf_plot = gdf.to_crs(4326).copy()
 
-    # Identify which traffic column to show (prefers B roads as they usually have more spatial variation)
+    # Identify which geofiles column to show (prefers B roads as they usually have more spatial variation)
     color_col = "AADF_B" if "AADF_B" in gdf_plot.columns else "AADF_region_weighted"
 
     fig = px.choropleth(
@@ -120,18 +120,18 @@ if __name__ == "__main__":
     BASE = Path(__file__).resolve().parent.parent
 
     configs = {
-        "DE": {
-            "csv": BASE / "data/raw/Germany/traffic/Jawe2023.csv",
-            "pbf": BASE / "data/raw/Germany/traffic/germany_ab_osmium.osm.pbf",
-            "geo": BASE / "data/processed/geo_data/Germany_merged.geojson",
+        "germany": {
+            "csv": BASE / "data/raw/Germany/geofiles/Jawe2023.csv",
+            "pbf": BASE / "data/raw/Germany/geofiles/germany_ab_osmium.osm.pbf",
+            "geo": BASE / "data/preprocessed/germany/geofiles/Germany_merged.geojson",
             "sep": ";", "enc": "cp1252",
             "traffic_col": "DTV_Kfz_MobisSo_Q", "length_col": "Betriebs_km",
             "lon": "Koor_WGS84_E", "lat": "Koor_WGS84_N", "class_col": "Str_Kl"
         },
         "UK": {
-            "csv": BASE / "data/raw/uk/traffic/dft_traffic_counts_aadf.csv",
-            "pbf": BASE / "data/raw/uk/traffic/uk_ab_osmium.osm.pbf",
-            "geo": BASE / "data/processed/geo_data/UK_merged.geojson",
+            "csv": BASE / "data/raw/uk/geofiles/dft_traffic_counts_aadf.csv",
+            "pbf": BASE / "data/raw/uk/geofiles/uk_ab_osmium.osm.pbf",
+            "geo": BASE / "data/preprocessed/uk/geofiles/UK_merged.geojson",
             "sep": ",", "enc": "utf-8",
             "traffic_col": "all_motor_vehicles", "length_col": "link_length_km",
             "lon": "longitude", "lat": "latitude", "class_col": "Str_Kl"
@@ -155,6 +155,10 @@ if __name__ == "__main__":
         validate_plot(final_gdf, country)
 
         # Save output
-        out = BASE / f"data/preprocessed/{country.lower()}/traffic/{country.lower()}_final.gpkg"
-        # out.parent.mkdir(parents=True, exist_ok=True)
-        # final_gdf.to_file(out, driver="GPKG")
+        if country.lower() == 'germany':
+            country_abbrevation = 'ger'
+        elif country.lower() == 'uk':
+            country_abbrevation = 'uk'
+        out = BASE / f"data/preprocessed/{country.lower()}/geofiles/{country_abbrevation}_gdf_with_osm_roads.gpkg"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        final_gdf.to_file(out, driver="GPKG")

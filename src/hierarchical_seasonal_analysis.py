@@ -2,43 +2,17 @@ import os
 import calendar
 from pathlib import Path
 from typing import Optional, Dict, List, Union
-
 import numpy as np
 import pandas as pd
 import geopandas as gpd
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-import contextily as ctx
-from shapely.ops import unary_union
-
 import jax
 import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
 from numpyro.infer import MCMC, NUTS
-import arviz as az
-from matplotlib import rcParams
+from tueplots import bundles
 
-# ==========================================
-# CONFIGURATION & STYLE
-# ==========================================
-rcParams.update({
-    "text.usetex": True,
-    "font.family": "serif",
-    "font.serif": ["Computer Modern Roman"],
-    "axes.labelsize": 16,
-    "axes.titlesize": 16,
-    "xtick.labelsize": 16,
-    "ytick.labelsize": 16,
-    "legend.fontsize": 16,
-})
-
-SEASONS = {
-    "Winter": [11, 0, 1],
-    "Spring": [2, 3, 4],
-    "Summer": [5, 6, 7],
-    "Autumn": [8, 9, 10],
-}
 
 
 
@@ -151,20 +125,14 @@ def hierarchical_poisson_model(accidents, exposure, country_idx, region_idx, mon
     # non-centered reparameterization
     # (based on: https://mc-stan.org/docs/2_18/stan-users-guide/reparameterization-section.html)
     tau_region_season = numpyro.sample("tau_region_season", dist.HalfNormal(0.5))
-
-    # Sample from a standard normal first
     month_region_raw = numpyro.sample("month_region_raw",
                                       dist.Normal(0.0, 1.0).expand([n_regions, n_months]))
-
-    # Scale by tau afterwards
     month_region = month_region_raw * tau_region_season
     # Ensure zero-centering
     month_region = month_region - month_region.mean(axis=-1, keepdims=True)
 
-    # Store for analysis
     numpyro.deterministic("month_effect_region", month_region)
 
-    # Combine effects
     log_lambda = (mu_country[country_idx] + region_effect +
                   month_country[country_idx, month_idx] +
                   month_region[region_idx, month_idx])
@@ -215,25 +183,34 @@ def compute_seasonal_rates(posterior, country_idx_per_region, seasons):
     return results
 
 
-def plot_country_seasonality(posterior, country_names=("Germany", "UK")):
+def plot_country_seasonality(posterior, path, country_names=("Germany", "UK")):
+    plt.rcParams.update(bundles.icml2024(column="half", nrows=1, ncols=1))
+
     month_eff = posterior["month_effect_country"]
     months = np.arange(12)
     month_labels = [calendar.month_name[i + 1][:3] for i in months]
     colors = ["darkorange", "royalblue"]
 
-    plt.figure(figsize=(10, 5))
+    fig, ax = plt.subplots()
+
+    ax.axhline(1, color="black", linestyle="--", alpha=0.6, label="Annual Average")
+
     for i, name in enumerate(country_names):
-        mean = month_eff[:, i, :].mean(axis=0)
-        low, high = np.percentile(month_eff[:, i, :], [5, 95], axis=0)
+        mean = np.exp(month_eff[:, i, :].mean(axis=0))
+        low, high = np.percentile(np.exp(month_eff[:, i, :]), [5, 95], axis=0)
 
-        plt.plot(months, mean, label=name, color=colors[i], lw=2)
-        plt.fill_between(months, low, high, color=colors[i], alpha=0.2)
+        ax.plot(months, mean, label=name, color=colors[i])
+        ax.fill_between(months, low, high, color=colors[i], alpha=0.2, lw=0)
 
-    plt.xticks(months, month_labels)
-    plt.ylabel("Log-rate Effect")
-    #plt.title("National Seasonal Patterns")
-    plt.legend()
-    plt.grid(alpha=0.2)
+    ax.set_xticks(months)
+    ax.set_xticklabels(month_labels)
+    ax.set_ylabel(r"Relative Risk $\exp(\gamma_{c[j],m})$")
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.legend()
+    ax.grid(True, linestyle="--", alpha=0.5)
+
+    plt.savefig(path)
     plt.show()
 
 
@@ -244,14 +221,14 @@ def main():
     proc = AccidentDataProcessor()
 
     # Germany
-    ger_regions = gpd.read_file(BASE_DIR / "data/preprocessed/germany/traffic/ger_gdf_with_osm_roads.gpkg")
-    ger_acc = proc.load_accidents(BASE_DIR / "data/processed/reduced_uk_dataset/modified_ger.csv",
+    ger_regions = gpd.read_file(BASE_DIR / "data/preprocessed/de/geofiles/ger_gdf_with_osm_roads.gpkg")
+    ger_acc = proc.load_accidents(BASE_DIR / "data/preprocessed/germany/collisions/preprocessed_ger.csv",
                                   category_filters={"casualty_severity": [1]})
     ger_merged = proc.aggregate_by_region_monthly(ger_regions, ger_acc)
 
     # UK
-    uk_regions = gpd.read_file(BASE_DIR / "data/preprocessed/uk/traffic/uk_gdf_with_osm_roads.gpkg")
-    uk_acc = proc.load_accidents(BASE_DIR / "data/processed/reduced_uk_dataset/reduced_uk_dataset.csv",
+    uk_regions = gpd.read_file(BASE_DIR / "data/preprocessed/uk/geofiles/uk_gdf_with_osm_roads.gpkg")
+    uk_acc = proc.load_accidents(BASE_DIR / "data/preprocessed/uk/collisions/preprocessed_uk.csv",
                                  category_filters={"collision_severity": [1]})
     uk_merged = proc.aggregate_by_region_monthly(uk_regions, uk_acc)
 
@@ -263,9 +240,9 @@ def main():
     else:
         data = np.load(samples_path)
         posterior = {k: data[k] for k in data.files}
-        print(f'posterior shape: {posterior}')
 
-    plot_country_seasonality(posterior)
+    plot_path = BASE_DIR / 'results' / 'seasonal_effect.pdf'
+    plot_country_seasonality(posterior, plot_path)
 
 
 if __name__ == "__main__":

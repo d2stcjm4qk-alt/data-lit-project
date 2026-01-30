@@ -76,14 +76,14 @@ if __name__ == "__main__":
     BASE_DIR = Path(__file__).resolve().parent.parent
 
     # 1. Load your 500k-merged regions
-    region_path = BASE_DIR / "data" / "processed" / "geo_data" / "Germany_merged.geojson"
+    region_path = BASE_DIR / "data" / "preprocessed" / "germany" / "geofiles" / "Germany_merged.geojson"
     regions_gdf = gpd.read_file(region_path)
 
     # 2. Initialize Normalizer
     normalizer = AccidentNormalizer(regions_gdf)
 
     # 3. Process Accidents
-    acc_path = BASE_DIR / "data" / "processed" / "reduced_uk_dataset" / "modified_ger.csv"
+    acc_path = BASE_DIR / "data" / "preprocessed" / "germany" / "collisions" / "preprocessed_ger.csv"
     acc_gdf = normalizer.load_accident_data(acc_path, filters={"casualty_severity": ["1"]})
 
     # 4. Generate Final Dataset
