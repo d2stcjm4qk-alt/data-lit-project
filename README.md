@@ -42,6 +42,16 @@ data-lit-project/
 ├── results/             # Generated figures and summary tables
 ├── report/              # Final writte
 ```
+
+## Environment
+
+The analysis was conducted using **Python 3.11**.  
+All required packages are listed in `requirements.txt` and can be installed via:
+
+```bash
+pip install -r requirements.txt
+
+
 ## Code Pipeline
 1.  Download all datasets to corresponding data folder structure
 2.  Run all preprocessing notebooks
