@@ -46,6 +46,5 @@ data-lit-project/
 1.  Download all datasets to corresponding data folder structure
 2.  Run all preprocessing notebooks
 3.  Run [regional_merge.py](https://github.com/d2stcjm4qk-alt/data-lit-project/blob/main/src/regional_merge.py)
-4.  Run [populazation_normalization.py](https://github.com/d2stcjm4qk-alt/data-lit-project/blob/main/src/population_normalization.py)
-5.  Run [traffic_exposure_harmonization.py](https://github.com/d2stcjm4qk-alt/data-lit-project/blob/main/src/traffic_exposure_harmonization.py)
-6.  Run 
+4.  Run [traffic_exposure_harmonization.py](https://github.com/d2stcjm4qk-alt/data-lit-project/blob/main/src/traffic_exposure_harmonization.py)
+5.  Now you can run all anaylsis scripts of the `src` folder. 
