@@ -222,6 +222,6 @@ data/raw/uk/regions/Local_Authority_Districts_May_2024_Boundaries_UK
 data/preprocessed/geofiles/UK_merged.geojson
 data/preprocessed/geofiles/germany_motorways.geojson
 
-* .DS_Store
+*.DS_Store
 .idea/
 

@@ -29,7 +29,7 @@ def load_boundaries(path: str) -> gpd.GeoDataFrame:
 def load_population_table(pop_path: str,
                           sheet_name=0,
                           skiprows=0,
-                          code_col_keywords=("Regionalschlüssel", "Area Code", "Code"),
+                          code_col_keywords=("Amtlicher Regionalschlüssel", "Area Code", "Code"),
                           pop_col_keywords=("Bevölkerung", "population", "All ages")):
     if pop_path.suffix in [".xlsx", ".xls"]:
         df = pd.read_excel(pop_path, sheet_name=sheet_name, skiprows=skiprows)
@@ -47,7 +47,8 @@ def load_population_table(pop_path: str,
     df = df[[code_col, pop_col]].copy()
     df.columns = ["region_code", "population"]
 
-    df["region_code"] = df["region_code"].astype(str).str.strip()
+    df["region_code"] = df["region_code"].astype(str).str.split('.').str[0].str.strip()
+
     df["population"] = (
         df["population"].astype(str)
         .str.replace(" ", "")
@@ -55,34 +56,38 @@ def load_population_table(pop_path: str,
         .str.replace(",", ".", regex=False)
         .astype(float)
     )
+    df = df[df["region_code"].str.len() == 5].copy()
+    print('######################')
+    print(df.columns)
+    print(df["region_code"])
+    print('########################')
     return df
 
 
-##############################################
-# 2. ATTACH POPULATION
-##############################################
 def attach_population(
         regions_gdf: gpd.GeoDataFrame,
         pop_df: pd.DataFrame,
         region_code_col: str = "AGS"
 ) -> gpd.GeoDataFrame:
-    # print(f'ääääääää: {(regions_gdf[region_code_col])}')
-    # print(f'ööööööö: {(pop_df["region_code"])}')
+
+    regions_gdf[region_code_col] = regions_gdf[region_code_col].astype(str).str.strip()
+    regions_gdf = regions_gdf.dissolve(by=region_code_col, aggfunc='first').reset_index()
+
+    pop_dedup = pop_df.groupby("region_code")["population"].sum().reset_index()
+
     regions_gdf = regions_gdf.merge(
-        pop_df, left_on=region_code_col, right_on="region_code", how="left"
+        pop_dedup,
+        left_on=region_code_col,
+        right_on="region_code",
+        how="left"
     )
-    # regions_gdf["population"] = regions_gdf["population"].fillna(0)
-    # print(f'inside add piop: {regions_gdf["population"]}')
+
     missing = regions_gdf["population"].isna().sum()
     if missing:
-        print(f"WARNING: {missing} regions have no population data.")
+        print(f"WARNING: {missing} regions in map have no population data.")
 
     return regions_gdf
 
-
-##############################################
-# 3. REPLACE REGION WITH MANUAL FINER UNITS
-##############################################
 
 def replace_region_with_finer_units(
         base_gdf: gpd.GeoDataFrame,
@@ -122,9 +127,6 @@ def replace_region_with_finer_units(
     return gpd.GeoDataFrame(combined, crs=base_gdf.crs)
 
 
-##############################################
-# 4. MERGE SMALL REGIONS
-##############################################
 
 def merge_small_regions(
         gdf: gpd.GeoDataFrame,
@@ -264,10 +266,6 @@ def merge_small_regions(
     return gdf
 
 
-##############################################
-# 5. EXAMPLE PIPELINE
-##############################################
-
 def build_region_layer(boundary_path: str,
                        population_path: str,
                        finer_splits: dict | None = None,
@@ -367,7 +365,6 @@ def load_district_population(
 
     # Ensure BEZ is string and trimmed
     df['region_code'] = df['region_code'].astype(str).str.strip()
-    print(f'berlin region: {df["region_code"]}')
     return df
 
 
@@ -430,9 +427,7 @@ def plot_population(
     # Add basemap
     ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron, zoom=7, alpha=0.5)
 
-    # ------------------------
     # Physical scale / zoom
-    # ------------------------
     if reuse_zoom is not None:
         # Reuse exact xlim/ylim
         xlim, ylim = reuse_zoom
@@ -592,7 +587,6 @@ def main():
     # Quick fix if population has an extra 0
     pop_df['population'] = pop_df['population'] / 10
     pop_df['region_code'] = pop_df['region_code'].astype(str).str.strip()
-
     kreise = attach_population(kreise, pop_df)
 
     # --- Germany cities (lon/lat, offsets in meters) ---
@@ -651,7 +645,6 @@ def main():
 
     for finer in list_of_finer_gdfs:
         for region_id in finer["region_code"].unique():
-            # print(region_id)
             kreise = replace_region_with_finer_units(
                 base_gdf=kreise,
                 finer_gdf=finer,
@@ -662,6 +655,9 @@ def main():
     pd.set_option("display.max_columns", None)
     pd.set_option("display.max_colwidth", None)
 
+    kreise.to_file(BASE_DIR / "data" / "preprocessed" / "germany" / "geofiles" / "Germany_full.geojson",
+                   driver="GeoJSON")
+
     # Remove Regions with too large population but no smaller regions available
     codes_to_remove = ["03241", "05315"]
     kreise = kreise[~kreise['region_code'].isin(codes_to_remove)]
@@ -669,7 +665,9 @@ def main():
     # Merge small regions to target population
     merged_ger = merge_small_regions(kreise, pop_col="population", target_population=500_000,
                                      remove_below=150_000)
-    print(merged_ger['population'])
+
+    merged_ger.to_file(BASE_DIR / "data" / "preprocessed" / "germany" / "geofiles" / "Germany_merged.geojson",
+                       driver="GeoJSON")
 
     import plotly.express as px
 
@@ -692,7 +690,7 @@ def main():
                     title="Germany population of merged regions",
                     save_path=BASE_DIR / "results" / "figures" / "germany" / "Germany_merged_regions_pop.png",
                     vmin=1e4, vmax=4e6, scale_width_m=scale_ref)
-
+    print('Processing UK')
     uk_preprocessing(BASE_DIR, scale_ref)
     # Optionally save merged layer
     merged_ger.to_file(BASE_DIR / "data" / "preprocessed" / "germany" / "geofiles" / "Germany_merged.geojson",

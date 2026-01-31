@@ -221,7 +221,7 @@ def main():
     proc = AccidentDataProcessor()
 
     # Germany
-    ger_regions = gpd.read_file(BASE_DIR / "data/preprocessed/de/geofiles/ger_gdf_with_osm_roads.gpkg")
+    ger_regions = gpd.read_file(BASE_DIR / "data/preprocessed/germany/geofiles/ger_gdf_with_osm_roads.gpkg")
     ger_acc = proc.load_accidents(BASE_DIR / "data/preprocessed/germany/collisions/preprocessed_ger.csv",
                                   category_filters={"casualty_severity": [1]})
     ger_merged = proc.aggregate_by_region_monthly(ger_regions, ger_acc)
@@ -229,7 +229,7 @@ def main():
     # UK
     uk_regions = gpd.read_file(BASE_DIR / "data/preprocessed/uk/geofiles/uk_gdf_with_osm_roads.gpkg")
     uk_acc = proc.load_accidents(BASE_DIR / "data/preprocessed/uk/collisions/preprocessed_uk.csv",
-                                 category_filters={"collision_severity": [1]})
+                                 category_filters={"casualty_severity": [1]})
     uk_merged = proc.aggregate_by_region_monthly(uk_regions, uk_acc)
 
     samples_path = BASE_DIR / "data/mcmc/mcmc_samples_region.npz"
@@ -241,7 +241,7 @@ def main():
         data = np.load(samples_path)
         posterior = {k: data[k] for k in data.files}
 
-    plot_path = BASE_DIR / 'results' / 'seasonal_effect.pdf'
+    plot_path = BASE_DIR / 'results' / 'figures' /'seasonal_effect.pdf'
     plot_country_seasonality(posterior, plot_path)
 
 
