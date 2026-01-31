@@ -1,0 +1,20 @@
+name,value
+mean GER spring (regions and population),0.7192610106398576
+mean GER summer (regions and population),0.9277363103810313
+mean GER autumn (regions and population),0.7402677414394172
+mean GER winter (regions and population),0.5967663056244426
+mean GER all (regions and population),2.984031368084749
+mean UK spring (regions and population),0.5211649053479659
+mean UK summer (regions and population),0.595469060958178
+mean UK autumn (regions and population),0.5170101500954623
+mean UK winter (regions and population),0.5312407518592461
+mean UK all (regions and population),2.1648848682608524
+mean GER spring (traffic),2.910677269635297
+mean GER summer (traffic),3.4074388691884825
+mean GER autumn (traffic),3.2036081235769585
+mean GER winter (traffic),2.3933997133930833
+mean GER all (traffic),2.9787809939484555
+mean UK spring (traffic),1.686588257114163
+mean UK summer (traffic),1.846589757949043
+mean UK autumn (traffic),1.723177432588794
+mean UK winter (traffic),1.6608065137983896
