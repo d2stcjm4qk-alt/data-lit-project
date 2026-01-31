@@ -23,19 +23,19 @@ For OpenStreetMap (OSM) data, raw `.osm.pbf` files are very large. We therefore 
 - Hamburg: https://hub.arcgis.com/datasets/esri-de-content::stadtteile-hamburg/explore?location=53.567224%2C10.027704%2C11
 
 ### Regions
-- UK:
+- UK: https://geoportal.statistics.gov.uk/datasets/ons::local-authority-districts-may-2024-boundaries-uk-bgc-2/about
 - Germany: https://daten.gdz.bkg.bund.de/produkte/vg/vg250-ew_ebenen_1231/aktuell/vg250-ew_12-31.utm32s.gpkg.ebenen.zip, https://daten.gdz.bkg.bund.de/produkte/vg/vg250-ew_ebenen_1231/aktuell/vg250-ew_12-31.utm32s.shape.ebenen.zip
 - Berlin: https://daten.berlin.de/datensaetze/rbs-bezirke-dezember-2015
 - Munich: https://hub.arcgis.com/datasets/f7f4d6e8090742c6b774379780bd7d9b_0/explore?location=48.154871%2C11.541844%2C11
 - Hamburg: https://hub.arcgis.com/datasets/esri-de-content::stadtteile-hamburg/explore?location=53.567224%2C10.027704%2C11
 
 ### Traffic
-- Germany:
+- Germany: https://www.bast.de/DE/Themen/Digitales/HF_1/Massnahmen/verkehrszaehlung/Daten/2023_1/Jawe2023.html?filter=true&nn=401522&map=0
 - UK: https://storage.googleapis.com/dft-statistics/road-traffic/downloads/data-gov-uk/dft_traffic_counts_aadf.zip
 
 ### OSM
-- Germany:
-- UK:
+- Germany: https://download.geofabrik.de/europe/germany.html
+- UK: https://download.geofabrik.de/europe/united-kingdom-251201.osm.pbf
 
 ### OSM Highway Filter
 
