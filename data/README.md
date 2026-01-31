@@ -13,10 +13,10 @@ For OpenStreetMap (OSM) data, raw `.osm.pbf` files are very large. We therefore 
 
 ### Accidents
 - Germany: https://www.opengeodata.nrw.de/produkte/transport_verkehr/unfallatlas/Unfallorte2024_EPSG25832_CSV.zip
-- UK:
+- UK: https://data.dft.gov.uk/road-accidents-safety-data/dft-road-casualty-statistics-collision-2024.csv, https://data.dft.gov.uk/road-accidents-safety-data/dft-road-casualty-statistics-vehicle-2024.csv, https://data.dft.gov.uk/road-accidents-safety-data/dft-road-casualty-statistics-casualty-2024.csv
 
 ### Population
-- UK:
+- UK: https://www.ons.gov.uk/file?uri=/peoplepopulationandcommunity/populationandmigration/populationestimates/datasets/populationestimatesforukenglandandwalesscotlandandnorthernireland/mid2024/mye24tablesuk.xlsx
 - Germany: https://www.destatis.de/DE/Themen/Laender-Regionen/Regionales/Gemeindeverzeichnis/Administrativ/04-kreise.html
 - Berlin: https://download.statistik-berlin-brandenburg.de/eac90c8b858f8cac/9d46fc1fd059/SB_A01-05-00_2025h01_BE.xlsx
 - Munich: https://opendata.muenchen.de/dataset/e3f5dbd2-39cc-40cd-bc91-4bb49a0b1802/resource/a641ce6a-4e01-4f4b-9976-1ae6a47e3762/download/bevolkerung_bezirke_neu.csv
@@ -31,7 +31,7 @@ For OpenStreetMap (OSM) data, raw `.osm.pbf` files are very large. We therefore 
 
 ### Traffic
 - Germany:
-- UK:
+- UK: https://storage.googleapis.com/dft-statistics/road-traffic/downloads/data-gov-uk/dft_traffic_counts_aadf.zip
 
 ### OSM
 - Germany:
