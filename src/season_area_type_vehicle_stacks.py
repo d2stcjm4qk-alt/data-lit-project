@@ -28,10 +28,10 @@ plt.rcParams["ytick.labelsize"] = int(15 * font_scale)
 plt.rcParams["legend.fontsize"] = int(12 * font_scale)
 plt.rcParams["legend.title_fontsize"] = int(12 * font_scale)
 
-# Use the region-based normalization method from scripts/population_normalization.py
-_SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
-if str(_SCRIPTS_DIR) not in sys.path:
-    sys.path.append(str(_SCRIPTS_DIR))
+# Use the region-based normalization method from src/population_normalization.py
+_SRC_DIR = Path(__file__).resolve().parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.append(str(_SRC_DIR))
 from population_normalization import AccidentNormalizer
 
 class SevereAccidentAnalyzer:
@@ -41,7 +41,15 @@ class SevereAccidentAnalyzer:
         self.ger_data = None
 
     def load_uk_data(self):
-        df = pd.read_csv(self.data_path / "all_data_2024_uk.csv")
+        df = pd.read_csv(
+            self.data_path
+            / "uk"
+            / "collisions"
+            / "intermediate_steps"
+            / "all_data_2024_uk.csv"
+            ,
+            low_memory=False
+        )
         df["date"] = pd.to_datetime(df["date"], format="%d/%m/%Y", errors="coerce")
         self.uk_data = df[df["collision_severity"] == 1].copy()
         for col in ["longitude", "latitude"]:
@@ -53,13 +61,17 @@ class SevereAccidentAnalyzer:
             )
         self.uk_data["month"] = self.uk_data["date"].dt.month
         self.uk_data["season"] = self.uk_data["month"].apply(self._get_season)
-        self.uk_data["area_type"] = self.uk_data["urban_or_rural_area"].replace(
-            {1: "Urban", 2: "Rural", "1": "Urban", "2": "Rural"}
-        )
+        self.uk_data["area_type"] = self._map_area_type(self.uk_data, "urban_or_rural_area", "UK")
         return self.uk_data
 
     def load_germany_data(self):
-        df = pd.read_csv(self.data_path / "modified_ger_urb_rural.csv")
+        df = pd.read_csv(
+            self.data_path
+            / "germany"
+            / "collisions"
+            / "preprocessed_ger.csv",
+            low_memory=False
+        )
         self.ger_data = df[df["casualty_severity"] == 1].copy()
         for col in ["longitude", "latitude"]:
             self.ger_data[col] = (
@@ -69,9 +81,7 @@ class SevereAccidentAnalyzer:
                 .astype(float)
             )
         self.ger_data["season"] = self.ger_data["month"].apply(self._get_season)
-        self.ger_data["area_type"] = self.ger_data["urban_or_rural_area"].replace(
-            {1: "Urban", 2: "Rural", "1": "Urban", "2": "Rural"}
-        )
+        self.ger_data["area_type"] = self._map_area_type(self.ger_data, "urban_or_rural_area", "Germany")
         return self.ger_data
 
     @staticmethod
@@ -85,6 +95,17 @@ class SevereAccidentAnalyzer:
         if month in [9, 10, 11]:
             return "Autumn"
         return None
+
+    @staticmethod
+    def _map_area_type(df: pd.DataFrame, col: str, label: str):
+        if col in df.columns:
+            return df[col].replace({1: "Urban", 2: "Rural", "1": "Urban", "2": "Rural"})
+        print(
+            f"[WARN] {label} data missing '{col}'. "
+            "Defaulting all rows to 'Urban'. "
+            f"Available columns: {sorted(df.columns)}"
+        )
+        return "Urban"
 
     @staticmethod
     def _col_letters_to_index(col: str) -> int:
@@ -281,8 +302,8 @@ class SevereAccidentAnalyzer:
         x = np.arange(len(season_order))
         width = 0.4
 
-        uk_regions_path = self.data_path / "geo_data" / "UK_merged.geojson"
-        germany_regions_path = self.data_path / "geo_data" / "Germany_merged.geojson"
+        uk_regions_path = self.data_path / "uk" / "geofiles" / "UK_merged.geojson"
+        germany_regions_path = self.data_path / "germany" / "geofiles" / "Germany_merged.geojson"
 
         vehicle_type_cols = {
             "Car": "is_car",
@@ -377,13 +398,31 @@ class SevereAccidentAnalyzer:
         ger_urban = [ger_mean_rates.get((s, "Urban"), 0.0) for s in season_order]
         ger_rural = [ger_mean_rates.get((s, "Rural"), 0.0) for s in season_order]
 
-        uk_types_path = self.data_path / "merged_uk_with_kind_and_type.csv"
-        uk_types_df = pd.read_csv(uk_types_path)
+        def _first_existing(*paths):
+            for p in paths:
+                if p.exists():
+                    return p
+            return None
+
+        uk_types_path = _first_existing(
+            self.data_path
+            / "uk"
+            / "collisions"
+            / "intermediate_steps"
+            / "merged_uk_with_kind_and_type.csv",
+            self.data_path
+            / "uk"
+            / "collisions"
+            / "intermediate_steps"
+            / "merged_uk.csv",
+        )
+        if uk_types_path is None:
+            uk_types_df = self.uk_data.copy()
+        else:
+            uk_types_df = pd.read_csv(uk_types_path, low_memory=False)
         uk_types_df = uk_types_df[uk_types_df["collision_severity"] == 1].copy()
         uk_types_df["season"] = uk_types_df["month"].apply(self._get_season)
-        uk_types_df["area_type"] = uk_types_df["urban_or_rural_area"].replace(
-            {1: "Urban", 2: "Rural", "1": "Urban", "2": "Rural"}
-        )
+        uk_types_df["area_type"] = self._map_area_type(uk_types_df, "urban_or_rural_area", "UK vehicle types")
 
         uk_vehicle_props = _vehicle_type_props(uk_types_df)
         ger_vehicle_props = _vehicle_type_props(self.ger_data)
@@ -489,7 +528,7 @@ class SevereAccidentAnalyzer:
 
 if __name__ == "__main__":
     BASE_DIR = Path(__file__).resolve().parent.parent
-    data_dir = BASE_DIR / "data" / "processed"
+    data_dir = BASE_DIR / "data" / "preprocessed"
     analyzer = SevereAccidentAnalyzer(data_dir)
     analyzer.load_uk_data()
     analyzer.load_germany_data()
