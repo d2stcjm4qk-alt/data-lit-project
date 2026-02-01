@@ -37,8 +37,8 @@ def get_season(month):
 
 os.environ['OGR_GEOJSON_MAX_OBJ_SIZE'] = '0'
 
-uk_regions = gpd.read_file(BASE_DIR / "data" / "preprocessed" / "geofiles" / "UK_merged.geojson")
-de_regions = gpd.read_file(BASE_DIR / "data" / "preprocessed" / "geofiles" / "Germany_merged.geojson")
+uk_regions = gpd.read_file(BASE_DIR / "data" / "preprocessed" / "uk" / "geofiles" / "UK_merged.geojson")
+de_regions = gpd.read_file(BASE_DIR / "data" / "preprocessed" / "germany" / "geofiles" / "Germany_merged.geojson")
 
 if uk_regions.crs is None:
     uk_regions = uk_regions.set_crs("EPSG:4326")
@@ -55,7 +55,7 @@ de_df = pd.read_csv(data_dir / "germany" / "collisions" / "preprocessed_ger.csv"
 uk_df['season'] = uk_df['month'].apply(get_season)
 de_df['season'] = de_df['month'].apply(get_season)
 
-uk_fatal = uk_df[uk_df['collision_severity'] == 1].copy()
+uk_fatal = uk_df[uk_df['casualty_severity'] == 1].copy()
 de_fatal = de_df[de_df['casualty_severity'] == 1].copy()
 
 if 'first_road_class' in uk_fatal.columns:
@@ -72,7 +72,7 @@ de_fatal_gdf = gpd.GeoDataFrame(
     crs="EPSG:4326"
 )
 
-motorways = gpd.read_file(BASE_DIR / "data" / "preprocessed" / "geofiles" / "germany_motorways.geojson")
+motorways = gpd.read_file(BASE_DIR / "data" / "preprocessed" / "germany" / "geofiles" / "germany_motorways.geojson")
 de_fatal_gdf = de_fatal_gdf.to_crs(epsg=25832)
 motorways = motorways.to_crs(epsg=25832)
 
