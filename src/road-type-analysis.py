@@ -238,7 +238,7 @@ legend = ax2.legend(ratio_handles + context_handles, ratio_labels + context_labe
                     title=r'Legend')
 legend.get_frame().set_linewidth(1.5)
 
-output_dir = BASE_DIR / "results"
+output_dir = BASE_DIR / "results" / "figures"
 output_dir.mkdir(exist_ok=True)
 plt.savefig(output_dir / 'season-motorway.pdf', dpi=300, bbox_inches='tight')
 plt.show()
