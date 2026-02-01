@@ -16,21 +16,49 @@ import matplotlib.colors as mcolors
 from pathlib import Path
 
 
-##############################################
-# LOADERS
-##############################################
-
 def load_boundaries(path: str) -> gpd.GeoDataFrame:
     gdf = gpd.read_file(path)
     gdf = gdf.to_crs(3857)
     return gdf
 
 
-def load_population_table(pop_path: str,
-                          sheet_name=0,
-                          skiprows=0,
-                          code_col_keywords=("Amtlicher Regionalschlüssel", "Area Code", "Code"),
-                          pop_col_keywords=("Bevölkerung", "population", "All ages")):
+def load_population_table_uk(pop_path: str,
+                             sheet_name=0,
+                             skiprows=0,
+                             code_col_keywords=("Regionalschlüssel", "Area Code", "Code"),
+                             pop_col_keywords=("Bevölkerung", "population", "All ages")):
+    if pop_path.suffix in [".xlsx", ".xls"]:
+        df = pd.read_excel(pop_path, sheet_name=sheet_name, skiprows=skiprows)
+    else:
+        df = pd.read_csv(pop_path, sep=";", low_memory=False)
+
+    df.columns = [str(c).strip() for c in df.columns]
+
+    code_col = next((c for c in df.columns if any(k.lower() in c.lower() for k in code_col_keywords)), None)
+    pop_col = next((c for c in df.columns if any(k.lower() in c.lower() for k in pop_col_keywords)), None)
+
+    if code_col is None or pop_col is None:
+        raise ValueError("Could not detect code or population column")
+
+    df = df[[code_col, pop_col]].copy()
+    df.columns = ["region_code", "population"]
+
+    df["region_code"] = df["region_code"].astype(str).str.strip()
+    df["population"] = (
+        df["population"].astype(str)
+        .str.replace(" ", "")
+        .str.replace(".", "", regex=False)
+        .str.replace(",", ".", regex=False)
+        .astype(float)
+    )
+    return df
+
+
+def load_population_table_ger(pop_path: str,
+                              sheet_name=0,
+                              skiprows=0,
+                              code_col_keywords=("Amtlicher Regionalschlüssel", "Area Code", "Code"),
+                              pop_col_keywords=("Bevölkerung", "population", "All ages")):
     if pop_path.suffix in [".xlsx", ".xls"]:
         df = pd.read_excel(pop_path, sheet_name=sheet_name, skiprows=skiprows)
     else:
@@ -57,10 +85,6 @@ def load_population_table(pop_path: str,
         .astype(float)
     )
     df = df[df["region_code"].str.len() == 5].copy()
-    print('######################')
-    print(df.columns)
-    print(df["region_code"])
-    print('########################')
     return df
 
 
@@ -69,7 +93,6 @@ def attach_population(
         pop_df: pd.DataFrame,
         region_code_col: str = "AGS"
 ) -> gpd.GeoDataFrame:
-
     regions_gdf[region_code_col] = regions_gdf[region_code_col].astype(str).str.strip()
     regions_gdf = regions_gdf.dissolve(by=region_code_col, aggfunc='first').reset_index()
 
@@ -125,7 +148,6 @@ def replace_region_with_finer_units(
     combined = pd.concat([remaining, finer_gdf], ignore_index=True)
 
     return gpd.GeoDataFrame(combined, crs=base_gdf.crs)
-
 
 
 def merge_small_regions(
@@ -376,8 +398,8 @@ def plot_population(
         simplify_tolerance: Optional[float] = None,
         vmin: Optional[float] = None,
         vmax: Optional[float] = None,
-        scale_width_m: Optional[float] = None,   # reference width for matching scale
-        reuse_zoom: Optional[Tuple[Tuple[float,float], Tuple[float,float]]] = None  # (xlim, ylim)
+        scale_width_m: Optional[float] = None,  # reference width for matching scale
+        reuse_zoom: Optional[Tuple[Tuple[float, float], Tuple[float, float]]] = None  # (xlim, ylim)
 ):
     """
     Plot population per region with optional prominent city markers using LaTeX font and log scale.
@@ -484,9 +506,6 @@ def plot_population(
     return scale_width_m, (xlim, ylim)
 
 
-
-
-
 def uk_preprocessing(BASE_DIR, scale_ref):
     uk_shp_path = BASE_DIR / "data" / "raw" / "uk" / "regions" / "Local_Authority_Districts_May_2024_Boundaries_UK/LAD_MAY_2024_UK_BFE.shp"
     uk_pop_path = BASE_DIR / "data" / "raw" / "uk" / "population" / "mye24tablesuk.xlsx"
@@ -501,29 +520,30 @@ def uk_preprocessing(BASE_DIR, scale_ref):
     }
 
     uk_lad = load_boundaries(uk_shp_path)
-    uk_pop = load_population_table(uk_pop_path, sheet_name="MYE2 - Persons", skiprows=7,
+    uk_pop = load_population_table_uk(uk_pop_path, sheet_name="MYE2 - Persons", skiprows=7,
                                    code_col_keywords=("Code",), pop_col_keywords=("All ages",))
     uk_lad = attach_population(uk_lad, uk_pop, region_code_col="LAD24CD")
+    uk_lad.to_file(BASE_DIR / "data" / "preprocessed" / "uk" / "geofiles" / "UK_full.geojson",
+                   driver="GeoJSON")
+    print('UK_full done!')
     # Merge small regions to target population
     merged_uk = merge_small_regions(uk_lad, pop_col="population", target_population=500_000,
                                     remove_below=150_000)
-    merged_uk.to_file(BASE_DIR / "data" / "preprocessed" /"uk" / "geofiles" / "UK_merged.geojson",
-                     driver="GeoJSON")
+    merged_uk.to_file(BASE_DIR / "data" / "preprocessed" / "uk" / "geofiles" / "UK_merged.geojson",
+                      driver="GeoJSON")
     os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] = "0"  # No size limit
     gdf = gpd.read_file(
         BASE_DIR / "data" / "preprocessed" / "uk" / "geofiles" / "UK_merged.geojson"
     )
-    uk_scale_ref, zoom_coord= plot_population(gdf, prominent_cities=uk_cities,
-                    title="UK population of merged regions",
-                    save_path=BASE_DIR / "results" / "figures" / "uk" / "UK_merged_regions_pop.png",
-                    vmin=1e4, vmax=4e6, scale_width_m=scale_ref)
+    uk_scale_ref, zoom_coord = plot_population(gdf, prominent_cities=uk_cities,
+                                               title="UK population of merged regions",
+                                               save_path=BASE_DIR / "results" / "figures" / "uk" / "UK_merged_regions_pop.png",
+                                               vmin=1e4, vmax=4e6, scale_width_m=scale_ref)
 
     plot_population(uk_lad, prominent_cities=uk_cities,
                     title="UK population of regions",
                     save_path=BASE_DIR / "results" / "figures" / "uk" / "UK_orig_regions_pop.png",
                     vmin=1e4, vmax=4e6, scale_width_m=scale_ref, reuse_zoom=zoom_coord)
-
-
 
 
 def main():
@@ -535,7 +555,7 @@ def main():
     germany_pop_path = BASE_DIR / "data" / "raw" / "germany" / "population" / "04-kreise.xlsx"
 
     df_berlin = load_district_population(
-        file_path= str(BASE_DIR / "data" / "raw" / "germany" / "population" / "SB_A01-05-00_2025h01_BE.xlsx"),
+        file_path=str(BASE_DIR / "data" / "raw" / "germany" / "population" / "SB_A01-05-00_2025h01_BE.xlsx"),
         sheet=5,  # 5th sheet
         header_row=6,  # headers on row 8
         district_col=0,
@@ -583,7 +603,7 @@ def main():
     # Load base Germany boundaries
     kreise = load_boundaries(germany_shp_path)
     # Load population table
-    pop_df = load_population_table(germany_pop_path, sheet_name=1, skiprows=1)
+    pop_df = load_population_table_ger(germany_pop_path, sheet_name=1, skiprows=1)
     # Quick fix if population has an extra 0
     pop_df['population'] = pop_df['population'] / 10
     pop_df['region_code'] = pop_df['region_code'].astype(str).str.strip()
@@ -601,10 +621,11 @@ def main():
     }
 
     scale_ref, zoom_coords = plot_population(kreise, prominent_cities=germany_cities,
-                    title="Germany population of regions",
-                    save_path=str(BASE_DIR / "results" / "figures" / "germany" / "Germany_orig_regions_pop.png"),
-                    vmin=1e4,
-                    vmax=4e6)
+                                             title="Germany population of regions",
+                                             save_path=str(
+                                                 BASE_DIR / "results" / "figures" / "germany" / "Germany_orig_regions_pop.png"),
+                                             vmin=1e4,
+                                             vmax=4e6)
 
     list_of_finer_gdfs = []
     # Berlin setup
@@ -694,7 +715,7 @@ def main():
     uk_preprocessing(BASE_DIR, scale_ref)
     # Optionally save merged layer
     merged_ger.to_file(BASE_DIR / "data" / "preprocessed" / "germany" / "geofiles" / "Germany_merged.geojson",
-                      driver="GeoJSON")
+                       driver="GeoJSON")
 
     print("Processing complete. Merged regions saved to data/kreise_merged.geojson")
 
